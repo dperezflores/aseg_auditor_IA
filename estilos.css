@@ -1,0 +1,105 @@
+/* 1. Header nativo de Streamlit */
+[data-testid="stHeader"] {
+    background-color: #00304F !important;
+    border-bottom: 5px solid #FF5E12 !important;
+    height: 4.5rem !important;
+}
+
+[data-testid="stHeader"]::after {
+    content: "🏗️ ASEG | Sistema Inteligente de Extracción";
+    color: #FFFFFF;
+    font-size: 1.5rem;
+    font-weight: 600;
+    font-family: sans-serif;
+    position: absolute;
+    left: 3.8rem; 
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none; 
+}
+
+/* 2. Botón de la flecha */
+[data-testid="collapsedControl"] {
+    background-color: transparent !important;
+}
+[data-testid="collapsedControl"]:hover {
+    background-color: rgba(255, 255, 255, 0.1) !important; 
+}
+[data-testid="collapsedControl"] svg {
+    color: #FFFFFF !important;
+    fill: #FFFFFF !important;
+}
+
+/* 3. Eliminar basura visual de Streamlit */
+.stAppDeployButton { display: none !important; }
+[data-testid="stToolbar"], [data-testid="stActionElements"] {
+    display: none !important;
+    background-color: transparent !important;
+}
+
+/* 4. Ajuste del espacio principal de la página */
+.block-container {
+    padding-top: 5.5rem !important;
+}
+
+/* 5. Botones institucionales */
+.stDownloadButton button {
+    background-color: #362D32 !important; 
+    color: #FFFFFF !important;
+    border: none !important;
+}
+.stDownloadButton button:hover {
+    background-color: #FF7D42 !important; 
+    color: white !important;
+}
+
+/* =========================================================
+   NUEVO DISEÑO FRONTEND: BARRA LATERAL Y CARPETAS
+   ========================================================= */
+
+/* Fondo general de la barra lateral */
+[data-testid="stSidebar"] {
+    background-color: #f8f9fa !important;
+    border-right: 3px solid #00304F !important; /* Borde azul oscuro elegante */
+}
+
+/* El botón (X) para cerrar el menú */
+[data-testid="stSidebarCollapseButton"] svg {
+    color: #00304F !important; 
+    fill: #00304F !important;
+}
+
+/* Títulos dentro de la barra lateral */
+[data-testid="stSidebar"] h2 {
+    color: #00304F !important;
+    font-weight: 800 !important;
+}
+
+/* DISEÑO DE LAS CARPETAS (Expanders) */
+[data-testid="stSidebar"] [data-testid="stExpander"] {
+    background-color: #FFFFFF !important; /* Tarjeta blanca para que resalte del fondo gris */
+    border: 1px solid #00304F !important;
+    border-radius: 8px !important;
+    overflow: hidden; 
+    box-shadow: 0px 4px 6px rgba(0,0,0,0.05); /* Sombra sutil 3D */
+    margin-bottom: 15px !important;
+}
+
+/* Cabecera de la Carpeta (Cerrada) */
+[data-testid="stSidebar"] [data-testid="stExpander"] summary {
+    background-color: #FFFFFF !important; 
+    color: #00304F !important; /* Texto en azul oscuro */
+    font-weight: 600 !important;
+    padding: 10px !important;
+}
+
+/* Efecto al pasar el mouse por la carpeta (Adiós rojo, hola durazno/naranja) */
+[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover {
+    background-color: #FFBAA3 !important; /* Durazno claro */
+    color: #362D32 !important; /* Texto carbón */
+}
+
+/* Icono de la flecha de la carpeta al pasar el mouse */
+[data-testid="stSidebar"] [data-testid="stExpander"] summary:hover svg {
+    fill: #FF5E12 !important; /* Flecha naranja */
+}
