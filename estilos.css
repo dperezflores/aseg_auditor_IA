@@ -104,3 +104,20 @@
     fill: #FF5E12 !important; /* Flecha naranja */
 }
 
+/* BOTON ABRIR SIDEBAR */
+[data-testid="collapsedControl"] {
+    position: fixed !important;
+    top: 0.7rem !important;
+    left: 0.7rem !important;
+    z-index: 999999 !important;
+    display: flex !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+}
+
+[data-testid="collapsedControl"] svg {
+    color: white !important;
+    fill: white !important;
+    width: 26px !important;
+    height: 26px !important;
+}
