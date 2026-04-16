@@ -32,21 +32,7 @@
    2. BOTÓN SIDEBAR (FLECHA / HAMBURGUESA)
    ========================================================= */
 
-[data-testid="collapsedControl"] {
-    position: fixed !important;
-    top: 0.75rem !important;
-    left: 0.75rem !important;
-    width: 42px !important;
-    height: 42px !important;
-    border-radius: 8px !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-    z-index: 999999 !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    background-color: rgba(255,255,255,0.08) !important;
-}
+
 
 [data-testid="collapsedControl"]:hover {
     background-color: rgba(255,255,255,0.18) !important;
