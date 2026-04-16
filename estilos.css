@@ -104,3 +104,8 @@
     fill: #FF5E12 !important; /* Flecha naranja */
 }
 
+/* Empujar toda la barra superior de Streamlit hacia abajo para que no choque con la cabecera ASEG */
+[data-testid="stHeader"] {
+    top: 65px !important; 
+    z-index: 999999 !important;
+}
