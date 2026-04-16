@@ -48,6 +48,37 @@ def cargar_css(archivo_css):
     except: pass
 cargar_css("estilos.css")
 
+st.markdown("""
+<style>
+.boton-sidebar-fijo{
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    z-index: 999999;
+    background:#ffffff20;
+    color:white;
+    border:none;
+    padding:10px 14px;
+    border-radius:8px;
+    font-size:22px;
+    cursor:pointer;
+    backdrop-filter: blur(4px);
+}
+.boton-sidebar-fijo:hover{
+    background:#ffffff35;
+}
+</style>
+
+<button class="boton-sidebar-fijo" onclick="
+const btn = window.parent.document.querySelector('[data-testid=\"stSidebarCollapseButton\"]');
+if(btn){btn.click();}
+const openBtn = window.parent.document.querySelector('[aria-label=\"Open sidebar\"]');
+if(openBtn){openBtn.click();}
+">
+☰
+</button>
+""", unsafe_allow_html=True)
+
 def msg_ayuda(texto): 
     st.markdown(f"<p style='color:#362D32; font-size:13.5px; margin-bottom:10px;'>{texto}</p>", unsafe_allow_html=True)
 
