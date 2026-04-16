@@ -2,7 +2,12 @@
 [data-testid="stHeader"] {
     background-color: #00304F !important;
     border-bottom: 5px solid #FF5E12 !important;
-    height: 4.5rem !important;
+    min-height: 4.5rem !important;
+    height: auto !important;
+    display: flex !important;
+    align-items: center !important;
+    position: relative !important;
+    z-index: 10 !important;
 }
 
 [data-testid="stHeader"]::after {
@@ -109,17 +114,23 @@
 /* BOTON ABRIR SIDEBAR */
 [data-testid="collapsedControl"] {
     position: fixed !important;
-    top: 0.7rem !important;
-    left: 0.7rem !important;
-    z-index: 999999 !important;
+    top: 14px !important;
+    left: 14px !important;
+    width: 42px !important;
+    height: 42px !important;
+    border-radius: 8px !important;
     display: flex !important;
-    opacity: 1 !important;
+    align-items: center !important;
+    justify-content: center !important;
+    z-index: 999999 !important;
     visibility: visible !important;
+    opacity: 1 !important;
+    background-color: rgba(255,255,255,0.08) !important;
 }
 
 [data-testid="collapsedControl"] svg {
     color: white !important;
     fill: white !important;
-    width: 26px !important;
-    height: 26px !important;
+    width: 24px !important;
+    height: 24px !important;
 }
