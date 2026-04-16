@@ -1,27 +1,15 @@
 /* 1. Header nativo de Streamlit */
-[data-testid="stHeader"] {
-    background-color: #00304F !important;
-    border-bottom: 5px solid #FF5E12 !important;
-    min-height: 4.5rem !important;
-    height: auto !important;
-    display: flex !important;
-    align-items: center !important;
-    position: relative !important;
-    z-index: 10 !important;
+
+
+/* ocultar header streamlit */
+[data-testid="stHeader"]{
+    background: transparent !important;
+    height: 0px !important;
 }
 
-[data-testid="stHeader"]::after {
-    content: "🏗️ ASEG | Sistema Inteligente de Extracción";
-    color: #FFFFFF;
-    font-size: 1.5rem;
-    font-weight: 600;
-    font-family: sans-serif;
-    position: absolute;
-    left: 4.8rem; 
-    top: 50%;
-    transform: translateY(-50%);
-    pointer-events: none; 
-    z-index: 1;
+/* espacio superior */
+.block-container{
+    padding-top: 6rem !important;
 }
 
 /* 2. Botón de la flecha */
