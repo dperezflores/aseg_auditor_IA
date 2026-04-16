@@ -5,7 +5,7 @@ import json
 import os
 from modulos import extraccion, generador_excel
 
-st.set_page_config(page_title="ASEG - Auditoría", page_icon="🏗️", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="ASEG - Auditoría", page_icon="🏗️", layout="wide", initial_sidebar_state="collapsed")
 
 # ==========================================
 # 💾 1. SISTEMA DE CACHÉ EN DISCO (PERSISTENCIA)
