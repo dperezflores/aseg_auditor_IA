@@ -16,11 +16,13 @@
     top: 50%;
     transform: translateY(-50%);
     pointer-events: none; 
+    z-index: 1;
 }
 
 /* 2. Botón de la flecha */
 [data-testid="collapsedControl"] {
     background-color: transparent !important;
+    z-index: 999999 !important;
 }
 [data-testid="collapsedControl"]:hover {
     background-color: rgba(255, 255, 255, 0.1) !important; 
