@@ -104,8 +104,24 @@
     fill: #FF5E12 !important; /* Flecha naranja */
 }
 
-/* Empujar toda la barra superior de Streamlit hacia abajo para que no choque con la cabecera ASEG */
+/* 1. Mover el botón de la barra lateral hacia abajo para que salga de la franja azul */
+[data-testid="collapsedControl"] {
+    top: 90px !important;
+    left: 15px !important;
+    z-index: 9999999 !important;
+    background-color: white !important;
+    border-radius: 5px !important;
+    box-shadow: 0px 2px 5px rgba(0,0,0,0.2) !important;
+    padding: 5px !important;
+}
+
+/* 2. Empujar el contenido de la página hacia abajo para que la franja no corte el texto de "Bienvenido..." */
+.block-container {
+    padding-top: 100px !important;
+}
+
+/* 3. Asegurar que la barra superior nativa no estorbe */
 [data-testid="stHeader"] {
-    top: 65px !important; 
+    background: transparent !important;
     z-index: 999999 !important;
 }
