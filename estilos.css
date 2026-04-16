@@ -104,38 +104,3 @@
     fill: #FF5E12 !important; /* Flecha naranja */
 }
 
-/* 1. Forzar la aparición del botón de la barra lateral y pintarlo de azul */
-[data-testid="collapsedControl"] {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    z-index: 999999 !important;
-    background-color: #00304F !important; /* Fondo azul institucional */
-    border-radius: 8px !important;
-    box-shadow: 0px 4px 6px rgba(0,0,0,0.2) !important;
-    margin-top: 15px !important;
-    margin-left: 15px !important;
-    transition: all 0.3s ease !important;
-}
-
-/* 2. Hacer que la flecha dentro del botón sea blanca para que contraste */
-[data-testid="collapsedControl"] svg {
-    fill: white !important;
-    color: white !important;
-}
-
-/* 3. Efecto al pasar el mouse sobre el botón */
-[data-testid="collapsedControl"]:hover {
-    background-color: #FF5E12 !important; /* Se vuelve naranja al tocarlo */
-}
-
-/* 4. Darle un respiro al contenido superior para que no se amontone */
-.block-container {
-    padding-top: 60px !important;
-}
-
-/* 5. Asegurar que la cabecera invisible de Streamlit no estorbe */
-header[data-testid="stHeader"] {
-    background-color: transparent !important;
-    z-index: 999990 !important;
-}
