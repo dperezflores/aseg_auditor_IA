@@ -158,12 +158,3 @@
 [data-testid="stAlert"] {
     border-radius: 10px !important;
 }
-
-/* ICONO DEL BOTON SIDEBAR EN BLANCO */
-button[kind="header"] svg,
-[data-testid="collapsedControl"] svg,
-[data-testid="stSidebarCollapseButton"] svg {
-    color: #FFFFFF !important;
-    fill: #FFFFFF !important;
-    stroke: #FFFFFF !important;
-}
