@@ -39,7 +39,7 @@
 }
 
 [data-testid="collapsedControl"] svg {
-    color: #FFFFFF !important;
+    color: white !important;
     fill: #FFFFFF !important;
     width: 24px !important;
     height: 24px !important;
