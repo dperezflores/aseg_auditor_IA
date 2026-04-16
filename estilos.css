@@ -103,3 +103,10 @@
 [data-testid="stSidebar"] [data-testid="stExpander"] summary:hover svg {
     fill: #FF5E12 !important; /* Flecha naranja */
 }
+
+/* Traer el botón de la barra lateral al frente para que la cabecera no lo tape */
+[data-testid="collapsedControl"] {
+    z-index: 999999 !important;
+    background-color: white !important; /* Fondo blanco opcional para que resalte sobre la barra azul */
+    border-radius: 5px;
+}
