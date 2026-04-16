@@ -133,6 +133,31 @@ def renderizar_tabla_html(df, tipo_reporte):
     """
     components.html(html_completo, height=480, scrolling=False)
 
+st.markdown("""
+<div class='header-propio'>
+    🏗️ ASEG | Sistema Inteligente de Extracción
+</div>
+
+<style>
+.header-propio{
+position:fixed;
+top:0;
+left:0;
+right:0;
+height:70px;
+background:#00304F;
+color:white;
+font-size:38px;
+font-weight:700;
+display:flex;
+align-items:center;
+padding-left:70px;
+z-index:99999;
+border-bottom:5px solid #FF5E12;
+}
+</style>
+""", unsafe_allow_html=True)
+
 
 def main():
     # ==========================================
