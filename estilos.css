@@ -15,7 +15,7 @@
 
 /* Texto institucional */
 [data-testid="stHeader"]::after {
-    content: "🏗️ ASEG | Sistema Inteligente de Extracción";
+    content: "🏗️ ASEG | AuditorIA de Obra Pública";
     color: #FFFFFF;
     font-size: 1.5rem;
     font-weight: 700;
@@ -158,3 +158,5 @@
 [data-testid="stAlert"] {
     border-radius: 10px !important;
 }
+
+
