@@ -113,19 +113,23 @@ def reporte_comprobantes(datos):
 
 def reporte_polizas(datos):
     df_raw = pd.DataFrame(datos)
-    if 'Tipo de poliza' in df_raw.columns:
-        df_raw['Tipo de poliza'] = df_raw['Tipo de poliza'].astype(str).str.upper().str.strip()
-    else:
-        df_raw['Tipo de poliza'] = ""
+    
+    # 1. Blindaje contra columnas faltantes
+    cols_esperadas = ["Tipo de poliza", "Cuenta contable", "Numero de estimacion", "Numero de poliza", "Fecha", "Importe", "Fuente de financiamiento"]
+    for col in cols_esperadas:
+        if col not in df_raw.columns:
+            df_raw[col] = ""
 
-    df_dev = df_raw[df_raw['Tipo de poliza'].str.contains('DEVENGO')].copy()
-    df_pag = df_raw[df_raw['Tipo de poliza'].str.contains('PAGO')].copy()
+    df_raw['Tipo de poliza'] = df_raw['Tipo de poliza'].astype(str).str.upper().str.strip()
+
+    df_dev = df_raw[df_raw['Tipo de poliza'].str.contains('DEVENGO', na=False)].copy()
+    df_pag = df_raw[df_raw['Tipo de poliza'].str.contains('PAGO', na=False)].copy()
 
     df_dev = df_dev.rename(columns={'Cuenta contable': 'Cuenta contable del devengado', 'Numero de poliza': 'Número (Devengo)', 'Fecha': 'Fecha (Devengo)', 'Importe': 'Importe (Devengo)'})
-    if not df_dev.empty: df_dev = df_dev[['Numero de estimacion', 'Cuenta contable del devengado', 'Número (Devengo)', 'Fecha (Devengo)', 'Importe (Devengo)', 'Fuente de financiamiento']]
+    if not df_dev.empty: df_dev = df_dev[['Numero de estimacion', 'Cuenta contable del devengado', 'Número (Devengo)', 'Fecha (Devengo)', 'Importe (Devengo)', 'Fuente de financiamiento', 'Archivo Origen']]
     
     df_pag = df_pag.rename(columns={'Numero de poliza': 'Número (Pago)', 'Fecha': 'Fecha (Pago)', 'Importe': 'Importe (Pago)'})
-    if not df_pag.empty: df_pag = df_pag[['Numero de estimacion', 'Número (Pago)', 'Fecha (Pago)', 'Importe (Pago)']]
+    if not df_pag.empty: df_pag = df_pag[['Numero de estimacion', 'Número (Pago)', 'Fecha (Pago)', 'Importe (Pago)', 'Archivo Origen']]
 
     df_dev = _limpiar_numeros(df_dev, ['Importe (Devengo)'])
     df_dev = _limpiar_fechas(df_dev)
