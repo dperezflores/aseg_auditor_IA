@@ -159,4 +159,30 @@
     border-radius: 10px !important;
 }
 
+/* =========================================
+   🧭 NAVBAR: TELETRANSPORTAR EL MENÚ
+   ========================================= */
+/* Seleccionamos específicamente el primer menú horizontal de la página principal */
+div.block-container div[data-testid="stRadio"]:first-of-type {
+    position: fixed;
+    top: 12px;        /* Mueve esto (ej. 15px o 8px) para centrarlo verticalmente en tu franja azul */
+    right: 70px;      /* Lo separa del menú de 3 puntitos de Streamlit */
+    z-index: 999999;  /* Lo pone por encima de todo */
+    background-color: transparent !important;
+    width: auto;
+}
 
+/* Pintar las letras de blanco para que resalten en tu fondo oscuro */
+div.block-container div[data-testid="stRadio"]:first-of-type label p {
+    color: #FFFFFF !important;
+    font-size: 15px !important;
+    font-weight: 600 !important;
+    cursor: pointer;
+    margin-bottom: 0px !important;
+}
+
+/* Un toque profesional: Al pasar el mouse, las letras se pintan del color naranja de tu línea */
+div.block-container div[data-testid="stRadio"]:first-of-type label:hover p {
+    color: #FF5E12 !important; 
+    transition: color 0.2s ease-in-out;
+}
