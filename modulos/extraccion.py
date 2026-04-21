@@ -2,12 +2,26 @@ import google.generativeai as genai
 import json
 import streamlit as st
 import time
+import tempfile
+import os 
 
-if "GEMINI_API_KEY" in st.secrets:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+# ==========================================
+# 🤖 CONFIGURACIÓN DE LA IA
+# ==========================================
+try:
+    API_KEY = st.secrets["GEMINI_API_KEY"]
+    
+    # 🌟 TRUCO MAESTRO: Forzamos la variable de entorno para que 'upload_file' no falle
+    os.environ["GEMINI_API_KEY"] = API_KEY 
+    
+    genai.configure(api_key=API_KEY)
+except Exception as e:
+    st.error(f"Error cargando la API Key: {e}")
 
 MODEL_NAME = "models/gemini-flash-latest"
 modelo = genai.GenerativeModel(model_name=MODEL_NAME)
+
+
 
 def procesar_documento_ram(archivo_pdf, prompt):
     """Envía el PDF en RAM a Gemini con el prompt especificado."""
@@ -158,3 +172,69 @@ def procesar_polizas(archivo_pdf):
     ]
     """
     return procesar_documento_ram(archivo_pdf, prompt)
+
+def procesar_contratos(archivo_pdf):
+    # 1. Guardar temporalmente el archivo subido en la web para que Gemini lo lea
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(archivo_pdf.getvalue())
+        path_completo = tmp.name
+
+    try:
+        # Subir a Gemini
+        archivo_gemini = genai.upload_file(path=path_completo, mime_type="application/pdf")
+        while archivo_gemini.state.name == "PROCESSING":
+            time.sleep(3)
+            archivo_gemini = genai.get_file(archivo_gemini.name)
+
+        # Tu Prompt Exacto
+        prompt = """
+        Actúa como un Auditor de Obra Pública experto, con alta capacidad de análisis legal y técnico.
+        Analiza el contrato adjunto (que puede ser una versión escaneada) y extrae la siguiente información de forma precisa.
+        Si un dato no es legible o no se menciona, indica "No detectado en el documento".
+        Responde ÚNICAMENTE en formato JSON con la siguiente estructura:
+        {
+          "datos": {
+            "Número de contrato": "...",
+            "Descripción de la obra o servicio": "...",
+            "Tipo de contrato": "...",
+            "Contratista (Nombre o razón social)": "...",
+            "Número de registro PUC": "...",
+            "Representante legal": "...",
+            "Modalidad de adjudicación": "...",
+            "Deducciones y/o retenciones": "...",
+            "Monto del contrato": "...",
+            "Fecha de inicio contractual": "...",
+            "Fecha de término contractual": "...",
+            "Fecha de firma de contrato": "...",
+            "Anticipo": "...",
+            "Forma y lugar de pago": "...",
+            "Plazo de entrega de estimaciones": "...",
+            "Fecha de corte de estimaciones": "...",
+            "Fuente de financiamiento": "...",
+            "Personas que participan en el contrato": "..."
+          },
+          "conclusion": "Aquí redacta un párrafo...",
+          "procedimientos": {
+            "p1": "Pon 'OK' si el documento está firmado por todas las partes, de lo contrario explica quién falta.",
+            "p2": "Pon 'OK' si se formuló con la legislación aplicable..."
+          }
+        }
+        """
+
+        # Llamada al modelo (asegúrate de que la variable 'model' esté definida en este archivo)
+        response = modelo.generate_content([archivo_gemini, prompt])
+
+        # Limpiar el JSON de posibles marcas de Markdown
+        json_clean = response.text.replace('```json', '').replace('```', '').strip()
+        data_ia = json.loads(json_clean)
+
+        # Limpieza de servidor
+        genai.delete_file(archivo_gemini.name)
+        
+        # Devolvemos una lista con el diccionario maestro para que la App lo guarde en memoria
+        return [data_ia]
+
+    except Exception as e:
+        return [{"Error": str(e)}]
+    finally:
+        os.remove(path_completo) # Limpiamos la computadora

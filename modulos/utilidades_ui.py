@@ -5,6 +5,7 @@ import json
 import os
 import hashlib
 
+
 # ==========================================
 # 💾 SISTEMA DE CACHÉ EN DISCO
 # ==========================================
@@ -147,3 +148,114 @@ def renderizar_tabla_html(df, tipo_reporte):
     alto_dinamico = min(480, (filas_totales * 40) + 25)
     
     components.html(html_completo, height=alto_dinamico, scrolling=False)
+
+
+@st.cache_data
+def consultar_diccionario(nombre_archivo, procedimiento, ruta_excel="configuracion/diccionario_documentos.xlsx"):
+    """Busca el código en el nombre del archivo y devuelve el Concepto desde el Excel."""
+    if not os.path.exists(ruta_excel):
+        st.error(f"❌ No se encontró el archivo de diccionario en: {ruta_excel}")
+        return None
+        
+    try:
+        hoja = procedimiento[:3] 
+        df = pd.read_excel(ruta_excel, sheet_name=hoja)
+        
+        # --- MAGIA ANTIFALLOS PARA LAS COLUMNAS ---
+        # 1. Quitamos espacios invisibles al inicio y al final (ej. "Código " -> "Código")
+        df.columns = df.columns.str.strip()
+        
+        # 2. Creamos una lista virtual de columnas en MAYÚSCULAS y SIN ACENTOS solo para buscar
+        columnas_buscar = df.columns.str.upper().str.replace('Ó', 'O')
+        
+        # 3. Comprobamos si existen usando nuestra lista virtual segura
+        if 'CODIGO' not in columnas_buscar or 'CONCEPTO' not in columnas_buscar:
+            # Si falla, le mostramos al usuario exactamente qué está leyendo Python para poder corregirlo
+            st.error(f"❌ Revisar nombres de columnas en hoja '{hoja}'. Python detectó exactamente esto: {list(df.columns)}")
+            return None
+            
+        # 4. Si las encontró, recuperamos el nombre real que tienen en el Excel
+        col_codigo = df.columns[columnas_buscar == 'CODIGO'][0]
+        col_concepto = df.columns[columnas_buscar == 'CONCEPTO'][0]
+            
+        # --- BÚSQUEDA DEL ARCHIVO ---
+        for _, fila in df.iterrows():
+            codigo = str(fila[col_codigo]).strip()
+            if codigo and codigo != "nan" and codigo in nombre_archivo:
+                return str(fila[col_concepto]).strip().upper() # Devuelve ej: "CONTRATO"
+                
+        return None # Si no encontró ningún código coincidente
+    except Exception as e:
+        st.error(f"❌ Error al intentar leer la hoja '{hoja}' del Excel: {e}")
+        return None
+    
+def renderizar_reporte_contrato(datos_completos):
+    """Renderiza el diseño exacto de Colab para los contratos dentro de Streamlit."""
+    import pandas as pd
+    
+    # Extraemos las partes
+    diccionario_datos = datos_completos.get('datos', {})
+    texto_ia_conclusion = datos_completos.get('conclusion', '')
+    procedimientos_ia = datos_completos.get('procedimientos', {'p1': '', 'p2': ''})
+    nombre_archivo = datos_completos.get('Archivo Origen', 'Documento Desconocido')
+
+    # --- 1. DATOS DE LA TABLA PRINCIPAL ---
+    df_datos = pd.DataFrame({
+        "Concepto": list(diccionario_datos.keys()),
+        "Detalle": list(diccionario_datos.values())
+    })
+
+    # --- 2. DATOS DE LA CONCLUSIÓN ---
+    df_conclusion = pd.DataFrame({"CONCLUSIÓN DEL ANÁLISIS (IA)": [texto_ia_conclusion]})
+
+    # --- 3. DATOS DE PROCEDIMIENTO ---
+    df_proc = pd.DataFrame({
+        "Procedimiento": [
+            "1. Verificar que el documento este firmado por todas las partes.",
+            "2. Verificar que se haya formulado con la legislación aplicable de acuerdo a su objeto y fuente de financiamiento."
+        ],
+        "Detalle": [procedimientos_ia.get('p1',''), procedimientos_ia.get('p2','')]
+    })
+
+    # --- ESTILOS EXACTOS DE COLAB ---
+    estilo_tabla = df_datos.style.set_properties(**{
+        'text-align': 'left', 'border': '1px solid #D6D6D6', 'padding': '10px', 'font-family': 'Arial'
+    }).set_table_styles([
+        {'selector': 'th', 'props': [('background-color', '#00304F'), ('color', 'white'), ('text-align', 'center'), ('border-bottom', '4px solid #FF5E12')]},
+        {'selector': 'td.col0', 'props': [('font-weight', 'bold'), ('background-color', '#F8F9FA'), ('width', '350px')]}
+    ]).hide(axis='index')
+
+    estilo_conclusion = df_conclusion.style.set_properties(**{
+        'text-align': 'justify', 'padding': '20px', 'font-family': 'Arial', 'line-height': '1.6', 'background-color': '#FFF5F2'
+    }).set_table_styles([
+        {'selector': 'th', 'props': [('background-color', '#00304F'), ('color', 'white'), ('text-align', 'center'), ('border-bottom', '4px solid #FF5E12'), ('font-size', '16px')]}
+    ]).hide(axis='index')
+
+    def resaltar_resultado(val):
+        color = '#28a745' if val == 'OK' else '#dc3545'
+        weight = 'bold'
+        return f'color: {color}; font-weight: {weight};'
+
+    # Usamos .map en lugar de .applymap para versiones modernas de Pandas, pero funciona igual
+    estilo_proc = df_proc.style.set_properties(**{
+        'text-align': 'left', 'border': '1px solid #D6D6D6', 'padding': '10px', 'font-family': 'Arial'
+    }).set_table_styles([
+        {'selector': 'th', 'props': [('background-color', '#00304F'), ('color', 'white'), ('text-align', 'center'), ('border-bottom', '4px solid #FF5E12')]},
+        {'selector': 'td.col0', 'props': [('font-weight', 'bold'), ('width', '450px')]}
+    ]).map(resaltar_resultado, subset=['Detalle']).hide(axis='index')
+
+    # --- 5. RENDERIZADO EN STREAMLIT ---
+    header_html = f"""
+    <div style="border-left: 10px solid #FF5E12; padding: 10px 20px; margin-bottom: 20px; margin-top: 30px; background-color: white; box-shadow: 0 2px 5px #D6D6D6; border-radius: 5px;">
+        <h2 style="color: #00304F; margin: 0; font-size: 1.5rem;">ASEG - Auditoría de Obra Pública</h2>
+        <p style="color: #362D32; margin: 0; font-weight: bold;">Análisis de contrato: <span style="color: #FF5E12;">{nombre_archivo}</span></p>
+    </div>
+    """
+    
+    st.markdown(header_html, unsafe_allow_html=True)
+    st.markdown(estilo_tabla.to_html(), unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(estilo_conclusion.to_html(), unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(estilo_proc.to_html(), unsafe_allow_html=True)
+    st.markdown("<hr style='margin-top: 40px; margin-bottom: 40px;'>", unsafe_allow_html=True)
