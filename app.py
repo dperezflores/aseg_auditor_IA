@@ -1,5 +1,6 @@
 import streamlit as st
 from modulos import extraccion, generador_excel, utilidades_ui
+import time
 
 st.set_page_config(page_title="ASEG - Auditoría", page_icon="🏗️", layout="wide", initial_sidebar_state="expanded")
 
@@ -32,9 +33,20 @@ def procesar_lote_documentos(archivos, categoria, funcion_extraccion):
         return 0, False 
     
     hubo_error = False 
-    bar = st.progress(0, text=f"Procesando {categoria}...")
+    total = len(pendientes)
+    
+    # Inicializamos la barra en 0% con un mensaje de arranque
+    bar = st.progress(0, text=f"🚀 Iniciando análisis de {total} documento(s) de {categoria}...")
     
     for i, (arch, huella_carpeta) in enumerate(pendientes):
+        # 1. Calculamos el % exacto al iniciar este documento (Ej. 0, 33, 66)
+        porcentaje_actual = int((i / total) * 100)
+        
+        # Actualizamos la barra y mostramos el NOMBRE del documento actual
+        mensaje_analisis = f"🤖 Analizando IA ({i+1}/{total}): {arch.name}..."
+        bar.progress(porcentaje_actual, text=mensaje_analisis)
+        
+        # --- EXTRACCIÓN DE IA ---
         datos = funcion_extraccion(arch)
         
         if datos and isinstance(datos, list) and "Error" in datos[0]:
@@ -47,10 +59,24 @@ def procesar_lote_documentos(archivos, categoria, funcion_extraccion):
         st.session_state.historial[categoria].extend(datos)
         st.session_state.archivos_procesados.add(huella_carpeta) 
         utilidades_ui.guardar_cache(st.session_state.historial, st.session_state.archivos_procesados)
-        bar.progress((i+1)/len(pendientes))
         
-    bar.empty() 
-    return len(pendientes), hubo_error
+        # 2. Calculamos el % exacto al TERMINAR este documento
+        porcentaje_exito = int(((i + 1) / total) * 100)
+        
+        # 🌟 ESTRATEGIA DE CADENCIA 🌟
+        if i < total - 1:
+            # Si NO es el último, llenamos la barra parcialmente e informamos de la pausa
+            mensaje_pausa = f"✅ '{arch.name}' extraído. Pausa de seguridad de 5s..."
+            bar.progress(porcentaje_exito, text=mensaje_pausa)
+            time.sleep(5)
+        else:
+            # Si es el último, obligamos a la barra a llegar al 100%
+            bar.progress(100, text=f"🎉 ¡Lote completado al 100%!")
+            time.sleep(1) # Un segundo de pausa visual para que el usuario disfrute ver el 100%
+            
+    bar.empty() # Limpiamos la pantalla
+    return total, hubo_error
+
 
 def main():
     # ==========================================
