@@ -22,12 +22,29 @@ MODEL_NAME = "models/gemini-flash-latest"
 modelo = genai.GenerativeModel(model_name=MODEL_NAME)
 
 
+def llamar_gemini_seguro(modelo, contenidos, max_reintentos=3):
+    """Gestiona reintentos automáticos ante errores de cuota (429)."""
+    for intento in range(max_reintentos):
+        try:
+            return modelo.generate_content(contenidos)
+        except Exception as e:
+            error_str = str(e).lower()
+            if "429" in error_str or "quota" in error_str:
+                if intento < max_reintentos - 1:
+                    tiempo_espera = 45  # Un poco más del límite para asegurar
+                    st.warning(f"⏳ Límite de IA alcanzado. Pausando {tiempo_espera}s... (Intento {intento+1}/{max_reintentos})")
+                    time.sleep(tiempo_espera)
+                else:
+                    raise Exception("Límite de Google superado definitivamente. Intenta con menos archivos.")
+            else:
+                raise e
 
 def procesar_documento_ram(archivo_pdf, prompt):
     """Envía el PDF en RAM a Gemini con el prompt especificado."""
     try:
         documento = [{"mime_type": "application/pdf", "data": archivo_pdf.getvalue()}]
-        response = modelo.generate_content([documento[0], prompt])
+        # Usamos el escudo aquí:
+        response = llamar_gemini_seguro(modelo, [documento[0], prompt])
         
         json_clean = response.text.replace('```json', '').replace('```', '').strip()
         datos_ia = json.loads(json_clean)
@@ -221,8 +238,8 @@ def procesar_contratos(archivo_pdf):
         }
         """
 
-        # Llamada al modelo (asegúrate de que la variable 'model' esté definida en este archivo)
-        response = modelo.generate_content([archivo_gemini, prompt])
+        # Llamada al modelo usando EL ESCUDO
+        response = llamar_gemini_seguro(modelo, [archivo_gemini, prompt])
 
         # Limpiar el JSON de posibles marcas de Markdown
         json_clean = response.text.replace('```json', '').replace('```', '').strip()
@@ -230,6 +247,9 @@ def procesar_contratos(archivo_pdf):
 
         # Limpieza de servidor
         genai.delete_file(archivo_gemini.name)
+        
+        # Respiro extra para cuidar los Tokens por Minuto (TPM)
+        time.sleep(2) 
         
         # Devolvemos una lista con el diccionario maestro para que la App lo guarde en memoria
         return [data_ia]
