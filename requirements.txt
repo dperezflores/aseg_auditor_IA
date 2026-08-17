@@ -1,5 +1,8 @@
-streamlit
-pandas
-google-generativeai
-xlsxwriter
-openpyxl
+streamlit>=1.42,<2
+pandas>=2.2,<3
+google-genai>=1.0,<2
+pydantic>=2.10,<3
+psycopg[binary]>=3.2,<4
+xlsxwriter>=3.2,<4
+openpyxl>=3.1,<4
+
