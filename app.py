@@ -5,7 +5,7 @@ import os
 
 import streamlit as st
 
-from modulos import extraccion, generador_excel, persistencia, utilidades_ui
+from modulos import catalogo, extraccion, generador_excel, persistencia, utilidades_ui
 
 
 st.set_page_config(
@@ -83,6 +83,7 @@ def _guardar_inicio(
     archivo,
     huella: str,
     clave: str,
+    documento_catalogo: catalogo.DocumentoCatalogo | None = None,
 ) -> None:
     if st.session_state.usar_neon:
         persistencia.registrar_inicio(
@@ -93,6 +94,9 @@ def _guardar_inicio(
             clave,
             extraccion.MODEL_NAME,
             extraccion.PROMPT_VERSION,
+            documento_catalogo.id if documento_catalogo else None,
+            documento_catalogo.clave_catalogo if documento_catalogo else None,
+            documento_catalogo.tipo_documental if documento_catalogo else None,
         )
 
 
@@ -120,7 +124,12 @@ def _guardar_error(clave: str, mensaje: str) -> None:
         )
 
 
-def procesar_lote_documentos(archivos, categoria, funcion_extraccion) -> dict:
+def procesar_lote_documentos(
+    archivos,
+    categoria,
+    funcion_extraccion,
+    documento_catalogo: catalogo.DocumentoCatalogo | None = None,
+) -> dict:
     st.session_state.historial.setdefault(categoria, [])
     pendientes = []
     omitidos = 0
@@ -152,7 +161,7 @@ def procesar_lote_documentos(archivos, categoria, funcion_extraccion) -> dict:
             text=f"🤖 Analizando ({indice}/{total}): {archivo.name}",
         )
         try:
-            _guardar_inicio(categoria, archivo, huella, clave)
+            _guardar_inicio(categoria, archivo, huella, clave, documento_catalogo)
             resultado = funcion_extraccion(archivo)
             if resultado.estado != "OK":
                 mensaje = "; ".join(resultado.errores) or "Error de extracción no especificado"
@@ -221,14 +230,32 @@ def main() -> None:
         },
         "ETR": {"key_raiz": "up_etr", "nombre": "5_ETR (Entrega Recepción)"},
     }
-    mapa_funciones = {"CONTRATO": extraccion.procesar_contratos}
+    mapa_funciones = {
+        "CONTRATO": extraccion.procesar_contratos,
+        "CNT_CNT": extraccion.procesar_contratos,
+    }
     archivos_subidos = {}
+    documentos_catalogo = []
+    if st.session_state.usar_neon:
+        try:
+            documentos_catalogo = persistencia.cargar_catalogo_vigente(
+                st.session_state.procedimiento
+            )
+        except Exception as exc:
+            st.warning(f"No fue posible consultar el catálogo maestro: {exc}")
 
     with st.sidebar:
         st.header("📂 Expediente Unitario")
         st.caption(f"Activo: {st.session_state.expediente_nombre}")
         if st.session_state.usar_neon:
             st.success("Persistencia Neon activa")
+            if documentos_catalogo:
+                st.caption(
+                    f"Catálogo maestro: {len(documentos_catalogo)} documento(s) "
+                    "aprobado(s) para este procedimiento."
+                )
+            else:
+                st.caption("Catálogo maestro sin definiciones aprobadas para este procedimiento.")
         else:
             st.warning("Modo local temporal")
 
@@ -242,7 +269,7 @@ def main() -> None:
                 st.markdown(f"**Documentos generales ({etapa})**")
                 archivos_raiz = st.file_uploader(
                     f"Raíz {etapa}",
-                    type=["pdf"],
+                    type=catalogo.extensiones_por_etapa(documentos_catalogo, etapa),
                     accept_multiple_files=True,
                     key=config_etapa["key_raiz"],
                     label_visibility="collapsed",
@@ -406,22 +433,47 @@ def main() -> None:
             no_encontrados = 0
             sin_funcion = 0
             for nombre in seleccionados:
-                concepto = utilidades_ui.consultar_diccionario(
-                    nombre, st.session_state.procedimiento
+                documento_catalogo = catalogo.clasificar_archivo(
+                    nombre,
+                    (
+                        documento
+                        for documento in documentos_catalogo
+                        if documento.etapa == pagina_actual
+                    ),
+                )
+                concepto = (
+                    documento_catalogo.tipo_documental
+                    if documento_catalogo
+                    else utilidades_ui.consultar_diccionario(
+                        nombre, st.session_state.procedimiento
+                    )
                 )
                 if not concepto:
                     no_encontrados += 1
                     continue
-                coincidencia = next(
-                    ((clave, funcion) for clave, funcion in mapa_funciones.items() if clave in concepto),
-                    None,
+                coincidencia = (
+                    (concepto, mapa_funciones[concepto])
+                    if concepto in mapa_funciones
+                    else next(
+                        (
+                            (clave, funcion)
+                            for clave, funcion in mapa_funciones.items()
+                            if clave in concepto
+                        ),
+                        None,
+                    )
                 )
                 if not coincidencia:
                     sin_funcion += 1
                     st.warning(f"No hay extractor programado para: {concepto}.")
                     continue
                 categoria, funcion = coincidencia
-                parcial = procesar_lote_documentos([por_nombre[nombre]], categoria, funcion)
+                parcial = procesar_lote_documentos(
+                    [por_nombre[nombre]],
+                    categoria,
+                    funcion,
+                    documento_catalogo,
+                )
                 for clave in resumen:
                     resumen[clave] += parcial[clave]
 
@@ -437,11 +489,15 @@ def main() -> None:
     for concepto, datos in st.session_state.historial.items():
         if concepto in ["Estimaciones", "Facturas", "Comprobantes de Pago", "Pólizas"]:
             continue
-        docs = [
-            doc
-            for doc in datos
-            if pagina_actual in str(doc.get("Archivo Origen", "")).upper()
-        ]
+        docs = (
+            datos
+            if concepto.startswith(f"{pagina_actual}_")
+            else [
+                doc
+                for doc in datos
+                if pagina_actual in str(doc.get("Archivo Origen", "")).upper()
+            ]
+        )
         if docs:
             conceptos.append((concepto, docs))
 
@@ -449,7 +505,7 @@ def main() -> None:
         tabs = st.tabs([f"📊 {concepto}" for concepto, _ in conceptos])
         for tab, (concepto, documentos) in zip(tabs, conceptos):
             with tab:
-                if concepto == "CONTRATO":
+                if concepto in {"CONTRATO", "CNT_CNT"}:
                     for documento in documentos:
                         utilidades_ui.renderizar_reporte_contrato(documento)
 

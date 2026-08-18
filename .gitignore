@@ -1,7 +1,6 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
 .streamlit/secrets.toml
 cache_app.json
-.venv/
-.pytest_cache/
 

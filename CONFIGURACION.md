@@ -8,6 +8,7 @@ credenciales reales al repositorio.
 - `GEMINI_API_KEY`: clave de acceso a Gemini.
 - `GEMINI_MODEL`: modelo explícito; inicialmente `gemini-2.5-flash`.
 - `DATABASE_URL`: conexión agrupada del proyecto Neon `aseg-auditor-ia`.
+- `DATABASE_URL_ADMIN`: conexión directa opcional para migraciones e importaciones.
 - `APP_USER_ID`: identificador estable del usuario mientras se incorpora autenticación.
 
 La aplicación continúa funcionando con una caché local cuando `DATABASE_URL` no
@@ -20,10 +21,37 @@ se identifican por expediente, categoría, huella SHA-256, modelo y versión del
 prompt. Cambiar el modelo o el prompt provoca un nuevo análisis sin sobrescribir
 silenciosamente el resultado anterior.
 
+## Catálogo maestro
+
+El esquema del catálogo se agrega con `sql/002_catalogo_maestro.sql`. La carga del
+Excel es transaccional: primero se valida el archivo completo y después se guarda
+como una importación versionada. Una importación sólo se convierte en la fuente
+vigente cuando se ejecuta con `--activar`.
+
+Validación local, sin modificar Neon:
+
+```bash
+python -m scripts.importar_catalogo Catalogo_Maestro_ASEG.xlsx --solo-validar
+```
+
+Importación y activación controlada:
+
+```bash
+DATABASE_URL_ADMIN="..." python -m scripts.importar_catalogo \
+  Catalogo_Maestro_ASEG.xlsx --activar
+```
+
+La aplicación consulta exclusivamente los documentos que estén activos,
+aprobados y dentro de su vigencia. Los registros `Pendiente` o `Revisado` se
+conservan en Neon, pero no se convierten en reglas operativas.
+
+Use preferentemente la conexión directa para ejecutar migraciones o importar el
+catálogo. Mantenga la conexión agrupada en `DATABASE_URL` para el uso normal de
+Streamlit.
+
 ## Migración desde la versión anterior
 
 La caché `cache_app.json` no se importa automáticamente porque no contiene una
 identificación confiable del usuario ni del expediente. Puede conservarse como
 respaldo antes del despliegue y migrarse posteriormente mediante una herramienta
 controlada.
-
