@@ -1,260 +1,218 @@
-import google.generativeai as genai
-import json
-import streamlit as st
+from __future__ import annotations
+
+import os
+import re
 import time
-import tempfile
-import os 
+from typing import Type
 
-# ==========================================
-# 🤖 CONFIGURACIÓN DE LA IA
-# ==========================================
-try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
-    
-    # 🌟 TRUCO MAESTRO: Forzamos la variable de entorno para que 'upload_file' no falle
-    os.environ["GEMINI_API_KEY"] = API_KEY 
-    
-    genai.configure(api_key=API_KEY)
-except Exception as e:
-    st.error(f"Error cargando la API Key: {e}")
+import streamlit as st
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, ValidationError
 
-MODEL_NAME = "models/gemini-flash-latest"
-modelo = genai.GenerativeModel(model_name=MODEL_NAME)
+from modulos.esquemas import (
+    Contrato,
+    ListaComprobantes,
+    ListaEstimaciones,
+    ListaFacturas,
+    ListaPolizas,
+    ResultadoExtraccion,
+)
 
 
-def llamar_gemini_seguro(modelo, contenidos, max_reintentos=3):
-    """Gestiona reintentos automáticos ante errores de cuota (429)."""
+PROMPT_VERSION = "2026-08-17-v1"
+TAMANO_MAXIMO_PDF = 50 * 1024 * 1024
+
+
+def _secreto(nombre: str, default: str = "") -> str:
+    try:
+        return str(st.secrets.get(nombre, default))
+    except Exception:
+        return os.getenv(nombre, default)
+
+
+MODEL_NAME = _secreto("GEMINI_MODEL", "gemini-2.5-flash")
+
+
+def _cliente() -> genai.Client:
+    api_key = _secreto("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY no está configurada")
+    return genai.Client(api_key=api_key)
+
+
+def _segundos_reintento(error: Exception, intento: int) -> int:
+    texto = str(error)
+    coincidencia = re.search(r"retry(?:\s+in|\s+after)?\s+(\d+)", texto, re.IGNORECASE)
+    if coincidencia:
+        return min(120, int(coincidencia.group(1)) + 1)
+    return min(120, 15 * (2**intento))
+
+
+def _llamar_gemini(
+    contenidos: list,
+    esquema: Type[BaseModel],
+    max_reintentos: int = 3,
+):
+    cliente = _cliente()
     for intento in range(max_reintentos):
         try:
-            return modelo.generate_content(contenidos)
-        except Exception as e:
-            error_str = str(e).lower()
-            if "429" in error_str or "quota" in error_str:
-                if intento < max_reintentos - 1:
-                    tiempo_espera = 45  # Un poco más del límite para asegurar
-                    st.warning(f"⏳ Límite de IA alcanzado. Pausando {tiempo_espera}s... (Intento {intento+1}/{max_reintentos})")
-                    time.sleep(tiempo_espera)
-                else:
-                    raise Exception("Límite de Google superado definitivamente. Intenta con menos archivos.")
-            else:
-                raise e
+            return cliente.models.generate_content(
+                model=MODEL_NAME,
+                contents=contenidos,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=esquema,
+                    temperature=0.0,
+                ),
+            )
+        except Exception as exc:
+            texto = str(exc).lower()
+            recuperable = any(
+                marca in texto
+                for marca in ("429", "quota", "resource_exhausted", "503", "unavailable")
+            )
+            if not recuperable or intento == max_reintentos - 1:
+                raise
+            espera = _segundos_reintento(exc, intento)
+            st.warning(
+                f"⏳ Servicio de IA temporalmente ocupado. "
+                f"Nuevo intento en {espera}s ({intento + 1}/{max_reintentos})."
+            )
+            time.sleep(espera)
+    raise RuntimeError("No fue posible completar la llamada a Gemini")
 
-def procesar_documento_ram(archivo_pdf, prompt):
-    """Envía el PDF en RAM a Gemini con el prompt especificado."""
+
+def _normalizar_respuesta(response, esquema: Type[BaseModel]) -> list[dict]:
+    parsed = response.parsed
+    if parsed is None:
+        parsed = esquema.model_validate_json(response.text)
+    elif not isinstance(parsed, BaseModel):
+        parsed = esquema.model_validate(parsed)
+
+    contenido = parsed.model_dump(by_alias=True, mode="json")
+    return contenido if isinstance(contenido, list) else [contenido]
+
+
+def _metadatos(response) -> dict:
+    usage = getattr(response, "usage_metadata", None)
+    if usage is None:
+        consumo = {}
+    elif hasattr(usage, "model_dump"):
+        consumo = usage.model_dump(mode="json")
+    else:
+        consumo = {"detalle": str(usage)}
+    return {
+        "modelo": MODEL_NAME,
+        "version_prompt": PROMPT_VERSION,
+        "consumo": consumo,
+    }
+
+
+def procesar_documento(
+    archivo_pdf,
+    prompt: str,
+    esquema: Type[BaseModel],
+) -> ResultadoExtraccion:
     try:
-        documento = [{"mime_type": "application/pdf", "data": archivo_pdf.getvalue()}]
-        # Usamos el escudo aquí:
-        response = llamar_gemini_seguro(modelo, [documento[0], prompt])
-        
-        json_clean = response.text.replace('```json', '').replace('```', '').strip()
-        datos_ia = json.loads(json_clean)
-        
-        if isinstance(datos_ia, list):
-            return datos_ia
-        return [datos_ia]
-    except Exception as e:
-        return [{"Error": f"Fallo en IA: {str(e)}"}]
+        contenido = archivo_pdf.getvalue()
+        if not contenido:
+            raise ValueError("El archivo PDF está vacío")
+        if len(contenido) > TAMANO_MAXIMO_PDF:
+            raise ValueError("El PDF supera el límite de 50 MB admitido por Gemini")
 
-def procesar_estimaciones(archivo_pdf):
+        documento = types.Part.from_bytes(data=contenido, mime_type="application/pdf")
+        response = _llamar_gemini([documento, prompt], esquema)
+        datos = _normalizar_respuesta(response, esquema)
+        return ResultadoExtraccion(
+            estado="OK",
+            datos=datos,
+            metadatos=_metadatos(response),
+        )
+    except ValidationError as exc:
+        return ResultadoExtraccion(
+            estado="ERROR",
+            errores=[f"La respuesta de IA no cumple el esquema: {exc}"],
+            metadatos={"modelo": MODEL_NAME, "version_prompt": PROMPT_VERSION},
+        )
+    except Exception as exc:
+        return ResultadoExtraccion(
+            estado="ERROR",
+            errores=[f"Fallo en IA: {exc}"],
+            metadatos={"modelo": MODEL_NAME, "version_prompt": PROMPT_VERSION},
+        )
+
+
+def procesar_estimaciones(archivo_pdf) -> ResultadoExtraccion:
     prompt = """
-    Actúa como un Auditor de Obra Pública experto.
-    Busca la carátula de la estimación dentro de TODO el documento adjunto.
-    Una vez que la(s) encuentres, extrae los datos y responde ÚNICAMENTE en formato JSON.
-    Si un dato numérico no existe, pon 0.0.
-    Para las fechas usa SIEMPRE el formato YYYY-MM-DD.
-    Si no hay fecha, pon "1900-01-01".
+    Actúa como auditor de obra pública. Localiza todas las carátulas de estimación
+    contenidas en el PDF y extrae un registro por cada una.
 
-    IMPORTANTE: Si encuentras MÁS DE UNA carátula de estimación en el mismo documento, devuelve un ARREGLO (lista) de objetos JSON. Si solo hay una, devuelve un solo objeto JSON.
-
-    REGLAS ESTRICTAS DE EXTRACCIÓN:
-    1. "Numero de estimación": Extrae el valor EXACTAMENTE tal como aparece (ejemplo: '3 (TRES) NORMAL').
-    2. PERIODO DE EJECUCIÓN:
-       - Para el campo "De", busca en el documento etiquetas como 'PERIODO DEL', 'DE:', o 'DEL:'.
-       - Para el campo "Hasta", busca etiquetas como 'AL:' o 'HASTA:'.
-       - Convierte nombres de meses a su número correspondiente (01, 02, etc.).
-    3. DIFERENCIA ENTRE ANTICIPO Y AMORTIZACIÓN (¡MUY IMPORTANTE!):
-       - "Amortización": Es el descuento que se hace en ESTA estimación. Búscalo en la sección de montos a pagar bajo conceptos como "AMORTIZACION ANTICIPO" o "Amortizado".
-       - "Importe de anticipo": Es el MONTO TOTAL DEL ANTICIPO otorgado para todo el contrato. NUNCA pongas aquí el valor de la amortización. Si no encuentras el monto total, pon 0.0.
-    4. EXCLUSIÓN DE MONTOS: NUNCA repitas el mismo monto en Deducciones, Sancion o Retencion.
-       - Si dice "Sanción", ponlo SOLO en "Sancion".
-       - Si dice "Retención", ponlo SOLO en "Retencion".
-       - "Deducciones" solo se usa para descuentos que no entren en las otras categorías.
-
-    ESTRUCTURA JSON ESPERADA (Por cada estimación encontrada):
-    {
-      "Numero de estimación": "...",
-      "Fecha de elaboración o de estimación": "YYYY-MM-DD",
-      "De (Periodo de ejecución)": "YYYY-MM-DD",
-      "Hasta (Periodo de ejecución)": "YYYY-MM-DD",
-      "Importe sin IVA": 0.0,
-      "IVA": 0.0,
-      "Importe con IVA": 0.0,
-      "Importe de anticipo": 0.0,
-      "Amortización": 0.0,
-      "Deducciones": 0.0,
-      "Sancion": 0.0,
-      "Retencion": 0.0
-    }
-    IMPORTANTE: Si el 'Importe con IVA' no aparece, súmalo tú (Sin IVA + IVA).
+    Reglas:
+    - Conserva el número de estimación exactamente como aparece.
+    - Usa fechas en formato YYYY-MM-DD; si no existe una fecha usa 1900-01-01.
+    - Importe de anticipo es el total otorgado para el contrato.
+    - Amortización es únicamente el descuento aplicado en esa estimación.
+    - No repitas un mismo importe entre deducciones, sanción y retención.
+    - Si no aparece el importe con IVA, calcúlalo como importe sin IVA más IVA.
+    - Para importes inexistentes utiliza 0.0.
     """
-    return procesar_documento_ram(archivo_pdf, prompt)
+    return procesar_documento(archivo_pdf, prompt, ListaEstimaciones)
 
-def procesar_facturas(archivo_pdf):
+
+def procesar_facturas(archivo_pdf) -> ResultadoExtraccion:
     prompt = """
-    Actúa como un Auditor de obra pública.
-    Busca TODAS las facturas o CFDIs dentro del documento PDF adjunto.
-    Por cada factura que encuentres, extrae:
-    1. Número de factura (Folio Fiscal/UUID).
-    2. Descripción (Concepto de la factura, ej. Anticipo, Estimación 01, etc.).
-    3. Fecha de emisión (Formato YYYY-MM-DD). Si no hay fecha, pon "1900-01-01".
-    4. Monto Total (con IVA incluido, solo números, sin el signo $).
-    5. Número de Estimación (Si la descripción dice 'Estimación 05', extrae el número 5. Si es 'Anticipo', pon 0. Si no hay, pon 99).
+    Actúa como auditor de obra pública. Localiza todas las facturas o CFDI del PDF
+    y extrae un registro por comprobante.
 
-    IMPORTANTE: Si encuentras MÁS DE UNA factura en el documento, devuelve un ARREGLO (lista) de objetos JSON. Si solo hay una, devuelve un solo objeto JSON.
-
-    Devuelve SOLO formato JSON con estas llaves exactas por cada factura:
-    {
-      "Folio": "",
-      "Descripción": "",
-      "Fecha": "YYYY-MM-DD",
-      "Monto total": 0.0,
-      "Orden de estimacion": 0
-    }
+    Usa el UUID como folio, fechas YYYY-MM-DD y montos numéricos con IVA incluido.
+    Para el orden de estimación usa el número identificado; usa 0 para anticipo y
+    99 cuando el documento no permita determinarlo.
     """
-    return procesar_documento_ram(archivo_pdf, prompt)
+    return procesar_documento(archivo_pdf, prompt, ListaFacturas)
 
-def procesar_comprobantes(archivo_pdf):
+
+def procesar_comprobantes(archivo_pdf) -> ResultadoExtraccion:
     prompt = """
-    Actúa como un Auditor de Obra Pública y Analista Financiero experto.
-    Busca comprobantes de pago, transferencias, cheques o SPEI dentro de TODO el documento adjunto.
-    Una vez que lo(s) encuentres, extrae los datos y responde ÚNICAMENTE en formato JSON.
-    Si un dato de texto no existe, pon "N/A".
-    Si un dato numérico (como el Importe) no existe, pon 0.0.
-    Para las fechas usa SIEMPRE el formato YYYY-MM-DD. Si no hay fecha, pon "1900-01-01".
-    IMPORTANTE: Si encuentras MÁS DE UN comprobante de pago en el mismo documento, devuelve un ARREGLO (lista) de objetos JSON.
+    Actúa como auditor de obra pública y analista financiero. Localiza todos los
+    comprobantes de pago, transferencias, cheques o SPEI del PDF.
 
-    REGLAS ESTRICTAS DE EXTRACCIÓN:
-    1. "Número": Extrae la referencia numérica, el número de transferencia o una breve descripción que identifique el pago.
-    2. "Fecha de pago": La fecha en la que se realizó o autorizó la transacción.
-    3. "Importe": El monto total monetario de la transferencia o pago. (Solo el número, sin el símbolo de peso).
-    4. "Cuenta bancaria emisora": La cuenta de donde sale el dinero.
-    5. "Clave de rastreo": Identificador alfanumérico que suele venir en los SPEI o transferencias.
-    6. "Institución emisora": El banco de origen (ej. BBVA MEXICO, BANAMEX).
-    7. "Institución receptora": El banco destino (ej. BANORTE, SANTANDER).
-    8. "Cuenta beneficiaria": La cuenta CLABE, tarjeta o número de cuenta que recibe el pago.
-    
-    ESTRUCTURA JSON ESPERADA (Por cada comprobante encontrado):
-    {
-      "Número": "...",
-      "Fecha de pago": "YYYY-MM-DD",
-      "Importe": 0.0,
-      "Cuenta bancaria emisora": "...",
-      "Clave de rastreo": "...",
-      "Institución emisora": "...",
-      "Institución receptora": "...",
-      "Cuenta beneficiaria": "..."
-    }
+    Extrae fecha efectiva de pago, importe, cuenta emisora, clave de rastreo,
+    instituciones emisora y receptora y cuenta beneficiaria. Usa YYYY-MM-DD para
+    fechas, 1900-01-01 si no existe, N/A para texto ausente y 0.0 para importes
+    inexistentes.
     """
-    return procesar_documento_ram(archivo_pdf, prompt)
+    return procesar_documento(archivo_pdf, prompt, ListaComprobantes)
 
-def procesar_polizas(archivo_pdf):
+
+def procesar_polizas(archivo_pdf) -> ResultadoExtraccion:
     prompt = """
-    Actúa como un Auditor de Obra Pública y Contador experto. Analiza el documento PDF adjunto, el cual puede contener múltiples pólizas contables.
-    Extrae los datos requeridos y clasifícalos como "DEVENGO" o "PAGO".
+    Actúa como auditor de obra pública y contador. Analiza todas las pólizas del
+    PDF y clasifica cada registro como DEVENGO o PAGO.
 
-    REGLAS TÉCNICAS DE EXTRACCIÓN Y FILTRADO:
-    1. SI ES DEVENGO:
-       - REGLA ANTI-DUPLICADOS (CRÍTICA): ¡Nunca reportes el mismo importe dos veces! Si en el PDF encuentras que una misma cantidad de dinero pasa por una cuenta transitoria (terminación '09') y en otra póliza se reclasifica a una cuenta definitiva (terminación '00'), DEBES IGNORAR POR COMPLETO la póliza de la cuenta '09'.
-       - PLAN A (El Ideal): Extrae SOLAMENTE los datos de la póliza donde aparece la "Cuenta contable" definitiva (terminada en '00').
-       - PLAN B (Fallback): ÚNICAMENTE si confirmas que la cuenta '00' NO EXISTE en todo el PDF, entonces extrae los datos de la cuenta puente (terminada en '09') y escribe su valor así: "1235461409 (Sin cuenta 00)".
-       - MULTIPLES FONDOS: Es muy común que una estimación se pague con diferentes "Fondos". Si hay varios importes distintos con su respectiva cuenta '00', extrae cada uno como un registro separado.
-       - FUENTE DE FINANCIAMIENTO: Extrae la clave numérica de la columna "Fondo" (ej. 2525821100).
-    2. SI ES PAGO:
-       - El "Importe" debe ser estrictamente el valor de la fila que sale de BANCOS (Cuenta que inicia con 1112...). IGNORA los pasivos.
-    3. NUMERO DE POLIZA: Extrae el "No. Documento" EXACTAMENTE como aparece impreso en la hoja que elegiste, respetando todos los ceros a la izquierda (ej. 3000001565).
-    4. NUMERO DE ESTIMACION: Busca el texto de "Referencia:". Si está en blanco, devuelve la palabra "NO INDICA".
-    5. FECHA: Extrae la "Fecha Contab." en formato YYYY-MM-DD.
+    Para DEVENGO evita duplicar importes entre cuentas transitorias terminadas en
+    09 y cuentas definitivas terminadas en 00. Prefiere la cuenta 00; usa la 09
+    solamente cuando no exista la 00 e indícalo en el texto de la cuenta. Conserva
+    registros separados cuando existan fondos distintos.
 
-    ESTRUCTURA JSON OBLIGATORIA (LISTA):
-    [
-      {
-        "Tipo de poliza": "...",
-        "Cuenta contable": "...",
-        "Numero de estimacion": "...",
-        "Numero de poliza": "...",
-        "Fecha": "YYYY-MM-DD",
-        "Importe": 0.0,
-        "Fuente de financiamiento": "..."
-      }
-    ]
+    Para PAGO toma el importe de la salida de bancos cuya cuenta inicia en 1112.
+    Conserva ceros iniciales del número de póliza. Obtén el número de estimación de
+    la referencia y usa NO INDICA cuando esté vacío. Usa fechas YYYY-MM-DD.
     """
-    return procesar_documento_ram(archivo_pdf, prompt)
+    return procesar_documento(archivo_pdf, prompt, ListaPolizas)
 
-def procesar_contratos(archivo_pdf):
-    # 1. Guardar temporalmente el archivo subido en la web para que Gemini lo lea
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-        tmp.write(archivo_pdf.getvalue())
-        path_completo = tmp.name
 
-    try:
-        # Subir a Gemini
-        archivo_gemini = genai.upload_file(path=path_completo, mime_type="application/pdf")
-        while archivo_gemini.state.name == "PROCESSING":
-            time.sleep(3)
-            archivo_gemini = genai.get_file(archivo_gemini.name)
+def procesar_contratos(archivo_pdf) -> ResultadoExtraccion:
+    prompt = """
+    Actúa como auditor de obra pública con experiencia legal y técnica. Analiza el
+    contrato completo y extrae los datos contractuales solicitados por el esquema.
 
-        # Tu Prompt Exacto
-        prompt = """
-        Actúa como un Auditor de Obra Pública experto, con alta capacidad de análisis legal y técnico.
-        Analiza el contrato adjunto (que puede ser una versión escaneada) y extrae la siguiente información de forma precisa.
-        Si un dato no es legible o no se menciona, indica "No detectado en el documento".
-        Responde ÚNICAMENTE en formato JSON con la siguiente estructura:
-        {
-          "datos": {
-            "Número de contrato": "...",
-            "Descripción de la obra o servicio": "...",
-            "Tipo de contrato": "...",
-            "Contratista (Nombre o razón social)": "...",
-            "Número de registro PUC": "...",
-            "Representante legal": "...",
-            "Modalidad de adjudicación": "...",
-            "Deducciones y/o retenciones": "...",
-            "Monto del contrato": "...",
-            "Fecha de inicio contractual": "...",
-            "Fecha de término contractual": "...",
-            "Fecha de firma de contrato": "...",
-            "Anticipo": "...",
-            "Forma y lugar de pago": "...",
-            "Plazo de entrega de estimaciones": "...",
-            "Fecha de corte de estimaciones": "...",
-            "Fuente de financiamiento": "...",
-            "Personas que participan en el contrato": "..."
-          },
-          "conclusion": "Aquí redacta un párrafo...",
-          "procedimientos": {
-            "p1": "Pon 'OK' si el documento está firmado por todas las partes, de lo contrario explica quién falta.",
-            "p2": "Pon 'OK' si se formuló con la legislación aplicable..."
-          }
-        }
-        """
+    Si un dato no se menciona o no es legible usa No detectado en el documento.
+    En la conclusión resume la congruencia general sin afirmar irregularidades que
+    no estén demostradas. En p1 evalúa si están las firmas de todas las partes. En
+    p2 evalúa si el documento identifica la legislación aplicable de acuerdo con
+    su objeto y fuente de financiamiento. Usa OK únicamente cuando la evidencia del
+    documento sea suficiente; en caso contrario explica brevemente la carencia.
+    """
+    return procesar_documento(archivo_pdf, prompt, Contrato)
 
-        # Llamada al modelo usando EL ESCUDO
-        response = llamar_gemini_seguro(modelo, [archivo_gemini, prompt])
-
-        # Limpiar el JSON de posibles marcas de Markdown
-        json_clean = response.text.replace('```json', '').replace('```', '').strip()
-        data_ia = json.loads(json_clean)
-
-        # Limpieza de servidor
-        genai.delete_file(archivo_gemini.name)
-        
-        # Respiro extra para cuidar los Tokens por Minuto (TPM)
-        time.sleep(2) 
-        
-        # Devolvemos una lista con el diccionario maestro para que la App lo guarde en memoria
-        return [data_ia]
-
-    except Exception as e:
-        return [{"Error": str(e)}]
-    finally:
-        os.remove(path_completo) # Limpiamos la computadora
