@@ -34,7 +34,7 @@ def _clave_procesamiento(categoria: str, huella: str) -> str:
     )
 
 
-def _cargar_expediente_activo(forzar: bool = False) -> None:
+def _cargar_expediente_activo(forzar: bool = False) -> str | None:
     st.session_state.setdefault("procedimiento", "LPU (Licitación Pública)")
     st.session_state.setdefault("expediente_nombre", "Expediente principal")
     usuario = _secreto("APP_USER_ID", "usuario_local")
@@ -44,13 +44,14 @@ def _cargar_expediente_activo(forzar: bool = False) -> None:
         st.session_state.procedimiento[:3],
     )
     if not forzar and st.session_state.get("estado_cargado") == llave:
-        return
+        return None
 
     st.session_state.expediente_id = None
     st.session_state.usar_neon = False
+    accion = "local"
     if persistencia.disponible():
         try:
-            expediente_id = persistencia.obtener_o_crear_expediente(
+            expediente_id, creado = persistencia.obtener_o_crear_expediente(
                 st.session_state.expediente_nombre,
                 st.session_state.procedimiento,
                 usuario,
@@ -58,6 +59,7 @@ def _cargar_expediente_activo(forzar: bool = False) -> None:
             historial, procesados = persistencia.cargar_expediente(expediente_id)
             st.session_state.expediente_id = expediente_id
             st.session_state.usar_neon = True
+            accion = "creado" if creado else "abierto"
         except Exception as exc:
             st.warning(
                 "Neon está configurado, pero no fue posible abrir el expediente. "
@@ -70,6 +72,7 @@ def _cargar_expediente_activo(forzar: bool = False) -> None:
     st.session_state.historial = historial
     st.session_state.archivos_procesados = procesados
     st.session_state.estado_cargado = llave
+    return accion
 
 
 _cargar_expediente_activo()
@@ -277,6 +280,16 @@ def main() -> None:
 
     if pagina_actual == "🏠 Inicio":
         st.markdown("### Configuración del expediente")
+        mensaje_expediente = st.session_state.pop("mensaje_expediente", None)
+        if mensaje_expediente:
+            nivel, mensaje = mensaje_expediente
+            if nivel == "success":
+                st.success(mensaje)
+            elif nivel == "info":
+                st.info(mensaje)
+            else:
+                st.warning(mensaje)
+
         with st.form("form_expediente"):
             nombre = st.text_input(
                 "Nombre del expediente",
@@ -296,7 +309,23 @@ def main() -> None:
         if abrir:
             st.session_state.expediente_nombre = nombre.strip() or "Expediente principal"
             st.session_state.procedimiento = procedimiento
-            _cargar_expediente_activo(forzar=True)
+            accion = _cargar_expediente_activo(forzar=True)
+            nombre_activo = st.session_state.expediente_nombre
+            if accion == "creado":
+                st.session_state.mensaje_expediente = (
+                    "success",
+                    f'Expediente "{nombre_activo}" creado y abierto correctamente.',
+                )
+            elif accion == "abierto":
+                st.session_state.mensaje_expediente = (
+                    "info",
+                    f'El expediente "{nombre_activo}" ya existía; se abrió su información guardada.',
+                )
+            else:
+                st.session_state.mensaje_expediente = (
+                    "warning",
+                    f'Expediente "{nombre_activo}" abierto en modo local temporal.',
+                )
             st.rerun()
         st.info(
             "Suba los documentos desde el panel lateral. Los resultados se guardan "
@@ -427,4 +456,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
