@@ -10,7 +10,10 @@ from google import genai
 from google.genai import types
 from pydantic import BaseModel, ValidationError
 
+from modulos.catalogo import DocumentoCatalogo
+from modulos import motor_catalogo
 from modulos.esquemas import (
+    AnalisisDocumentoCatalogo,
     Contrato,
     ListaComprobantes,
     ListaEstimaciones,
@@ -20,7 +23,7 @@ from modulos.esquemas import (
 )
 
 
-PROMPT_VERSION = "2026-08-17-v1"
+PROMPT_VERSION = "2026-08-18-catalogo-v2"
 TAMANO_MAXIMO_PDF = 50 * 1024 * 1024
 
 
@@ -219,3 +222,34 @@ def procesar_contratos(archivo_pdf) -> ResultadoExtraccion:
     documento sea suficiente; en caso contrario explica brevemente la carencia.
     """
     return procesar_documento(archivo_pdf, prompt, Contrato)
+
+
+def procesar_con_catalogo(
+    archivo_pdf,
+    documento: DocumentoCatalogo,
+) -> ResultadoExtraccion:
+    """Ejecuta una extracción genérica gobernada por la definición de Neon."""
+    prompt = motor_catalogo.construir_prompt(documento)
+    resultado = procesar_documento(archivo_pdf, prompt, AnalisisDocumentoCatalogo)
+    resultado.metadatos.update(
+        {
+            "clave_catalogo": documento.clave_catalogo,
+            "tipo_documental": documento.tipo_documental,
+            "version_catalogo": documento.version_catalogo,
+            "firma_configuracion": documento.firma_configuracion,
+            "motor": "catalogo_generico",
+        }
+    )
+    if resultado.estado != "OK":
+        return resultado
+    if not resultado.datos:
+        return ResultadoExtraccion(
+            estado="ERROR",
+            errores=["La IA no devolvió el análisis estructurado del catálogo."],
+            metadatos=resultado.metadatos,
+        )
+
+    resultado.datos = [
+        motor_catalogo.normalizar_resultado(documento, resultado.datos[0])
+    ]
+    return resultado

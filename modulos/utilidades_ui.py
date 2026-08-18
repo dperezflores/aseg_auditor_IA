@@ -4,6 +4,7 @@ import pandas as pd
 import json
 import os
 import hashlib
+import html
 
 from modulos.esquemas import DatosContrato
 
@@ -272,3 +273,115 @@ def renderizar_reporte_contrato(datos_completos):
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(estilo_proc.to_html(), unsafe_allow_html=True)
     st.markdown("<hr style='margin-top: 40px; margin-bottom: 40px;'>", unsafe_allow_html=True)
+
+
+def renderizar_reporte_catalogo(analisis):
+    """Muestra una salida auditable y ordenada para cualquier tipo documental."""
+    definicion = analisis.get("catalogo", {})
+    identificacion = analisis.get("identificacion", {})
+    nombre_archivo = html.escape(
+        str(analisis.get("Archivo Origen", "Documento desconocido"))
+    )
+    nombre_documento = html.escape(
+        str(definicion.get("nombre_documento", "Análisis documental"))
+    )
+    clave_catalogo = html.escape(str(definicion.get("clave_catalogo", "Sin clave")))
+
+    st.markdown(
+        f"""
+        <div style="border-left:10px solid #FF5E12;padding:12px 20px;margin:25px 0 16px;
+                    background:white;box-shadow:0 2px 5px #D6D6D6;border-radius:5px;">
+            <h2 style="color:#00304F;margin:0;font-size:1.35rem;">{nombre_documento}</h2>
+            <p style="margin:4px 0 0;color:#362D32;"><b>{clave_catalogo}</b> · {nombre_archivo}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if definicion.get("configuracion_preliminar"):
+        estados = ", ".join(definicion.get("estados_preliminares", []))
+        st.warning(
+            "Este análisis utiliza campos o procedimientos todavía no aprobados "
+            f"({estados}). El resultado es preliminar y requiere revisión humana."
+        )
+
+    corresponde = identificacion.get("corresponde", "INDETERMINADO")
+    mensaje_identificacion = (
+        f"Identificación del documento: {corresponde}. "
+        f"{identificacion.get('justificacion', '')}"
+    )
+    if corresponde == "SI":
+        st.success(mensaje_identificacion)
+    elif corresponde == "NO":
+        st.error(mensaje_identificacion)
+    else:
+        st.warning(mensaje_identificacion)
+
+    paginas_identificacion = identificacion.get("paginas", [])
+    if paginas_identificacion:
+        st.caption(
+            "Páginas utilizadas para identificar el documento: "
+            + ", ".join(map(str, paginas_identificacion))
+        )
+
+    datos = analisis.get("datos_extraidos", [])
+    if datos:
+        st.markdown("#### Datos extraídos")
+        df_datos = pd.DataFrame(
+            [
+                {
+                    "Orden": dato.get("orden"),
+                    "Campo": dato.get("etiqueta"),
+                    "Valor": dato.get("valor"),
+                    "Evidencia": dato.get("evidencia"),
+                    "Página(s)": ", ".join(map(str, dato.get("paginas", []))) or "—",
+                    "Confianza": dato.get("confianza"),
+                }
+                for dato in datos
+            ]
+        ).sort_values("Orden")
+        st.dataframe(
+            df_datos.drop(columns=["Orden"]),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    procedimientos = analisis.get("procedimientos", [])
+    if procedimientos:
+        st.markdown("#### Procedimientos de revisión")
+        df_procedimientos = pd.DataFrame(
+            [
+                {
+                    "Orden": procedimiento.get("orden"),
+                    "Procedimiento": procedimiento.get("procedimiento"),
+                    "Resultado": str(procedimiento.get("resultado", "")).replace("_", " "),
+                    "Detalle": procedimiento.get("detalle"),
+                    "Evidencia": procedimiento.get("evidencia"),
+                    "Página(s)": ", ".join(
+                        map(str, procedimiento.get("paginas", []))
+                    ) or "—",
+                    "Riesgo": procedimiento.get("riesgo_codigo"),
+                    "Estado de la regla": procedimiento.get(
+                        "estado_revision_procedimiento"
+                    ),
+                }
+                for procedimiento in procedimientos
+            ]
+        ).sort_values("Orden")
+        st.dataframe(
+            df_procedimientos.drop(columns=["Orden"]),
+            hide_index=True,
+            use_container_width=True,
+        )
+
+    st.markdown("#### Conclusión preliminar de IA")
+    st.info(analisis.get("conclusion", "Sin conclusión disponible."))
+
+    fundamento = definicion.get("fundamento_normativo")
+    if fundamento:
+        st.caption(f"Referencia normativa del catálogo: {fundamento}")
+
+    for advertencia in analisis.get("advertencias", []):
+        st.warning(str(advertencia))
+
+    st.markdown("<hr style='margin:35px 0;'>", unsafe_allow_html=True)

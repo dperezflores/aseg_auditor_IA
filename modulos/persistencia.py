@@ -54,7 +54,50 @@ def cargar_catalogo_vigente(procedimiento: str):
                                   AND f.extension IS NOT NULL
                             ),
                             ARRAY['pdf']::text[]
-                        ) AS extensiones
+                        ) AS extensiones,
+                        d.version_catalogo,
+                        d.criterios_identificacion_ia,
+                        d.datos_clave_a_validar,
+                        d.fundamento_normativo,
+                        COALESCE(
+                            (
+                                SELECT jsonb_agg(
+                                    jsonb_build_object(
+                                        'orden', c.orden_salida,
+                                        'nombre_tecnico', c.nombre_tecnico,
+                                        'etiqueta', c.etiqueta_salida,
+                                        'tipo_dato', c.tipo_dato,
+                                        'obligatorio', c.obligatorio_ia,
+                                        'instruccion', c.instruccion_extraccion,
+                                        'estado_revision', c.estado_revision
+                                    ) ORDER BY c.orden_salida
+                                )
+                                FROM campos_extraccion c
+                                WHERE c.importacion_id = d.importacion_id
+                                  AND c.tipo_documental = d.tipo_documental
+                            ),
+                            '[]'::jsonb
+                        ) AS campos,
+                        COALESCE(
+                            (
+                                SELECT jsonb_agg(
+                                    jsonb_build_object(
+                                        'orden', p.orden,
+                                        'procedimiento_id', p.procedimiento_id,
+                                        'procedimiento', p.procedimiento_validacion,
+                                        'resultado_esperado', p.resultado_esperado,
+                                        'evidencia_requerida', p.evidencia_requerida,
+                                        'riesgo_codigo', p.riesgo_codigo,
+                                        'estado_revision', p.estado_revision
+                                    ) ORDER BY p.orden
+                                )
+                                FROM procedimientos_validacion p
+                                WHERE p.importacion_id = d.importacion_id
+                                  AND p.tipo_documental = d.tipo_documental
+                                  AND p.activo
+                            ),
+                            '[]'::jsonb
+                        ) AS procedimientos
                     FROM catalogo_documentos_vigentes d
                     WHERE d.procedimiento = %s
                     ORDER BY d.orden_en_procedimiento, d.clave_catalogo

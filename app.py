@@ -28,9 +28,23 @@ def _huella_sha256(archivo) -> str:
     return hashlib.sha256(archivo.getvalue()).hexdigest()
 
 
-def _clave_procesamiento(categoria: str, huella: str) -> str:
+def _version_prompt(
+    documento_catalogo: catalogo.DocumentoCatalogo | None = None,
+) -> str:
+    if not documento_catalogo:
+        return extraccion.PROMPT_VERSION
     return ":".join(
-        (categoria, huella, extraccion.MODEL_NAME, extraccion.PROMPT_VERSION)
+        (extraccion.PROMPT_VERSION, documento_catalogo.firma_configuracion)
+    )
+
+
+def _clave_procesamiento(
+    categoria: str,
+    huella: str,
+    documento_catalogo: catalogo.DocumentoCatalogo | None = None,
+) -> str:
+    return ":".join(
+        (categoria, huella, extraccion.MODEL_NAME, _version_prompt(documento_catalogo))
     )
 
 
@@ -93,7 +107,7 @@ def _guardar_inicio(
             huella,
             clave,
             extraccion.MODEL_NAME,
-            extraccion.PROMPT_VERSION,
+            _version_prompt(documento_catalogo),
             documento_catalogo.id if documento_catalogo else None,
             documento_catalogo.clave_catalogo if documento_catalogo else None,
             documento_catalogo.tipo_documental if documento_catalogo else None,
@@ -136,7 +150,7 @@ def procesar_lote_documentos(
 
     for archivo in archivos:
         huella = _huella_sha256(archivo)
-        clave = _clave_procesamiento(categoria, huella)
+        clave = _clave_procesamiento(categoria, huella, documento_catalogo)
         if clave in st.session_state.archivos_procesados:
             omitidos += 1
         else:
@@ -451,21 +465,34 @@ def main() -> None:
                 if not concepto:
                     no_encontrados += 1
                     continue
-                coincidencia = (
-                    (concepto, mapa_funciones[concepto])
-                    if concepto in mapa_funciones
-                    else next(
-                        (
-                            (clave, funcion)
-                            for clave, funcion in mapa_funciones.items()
-                            if clave in concepto
+                if documento_catalogo:
+                    coincidencia = (
+                        documento_catalogo.tipo_documental,
+                        lambda archivo, definicion=documento_catalogo: (
+                            extraccion.procesar_con_catalogo(archivo, definicion)
                         ),
-                        None,
                     )
-                )
+                else:
+                    coincidencia = (
+                        (concepto, mapa_funciones[concepto])
+                        if concepto in mapa_funciones
+                        else next(
+                            (
+                                (clave, funcion)
+                                for clave, funcion in mapa_funciones.items()
+                                if clave in concepto
+                            ),
+                            None,
+                        )
+                    )
                 if not coincidencia:
                     sin_funcion += 1
-                    st.warning(f"No hay extractor programado para: {concepto}.")
+                    st.warning(
+                        f"El archivo fue reconocido por la clasificación anterior "
+                        f"como {concepto}, pero no existe una definición aprobada "
+                        f"del catálogo para {st.session_state.procedimiento[:3]} "
+                        f"en esta etapa."
+                    )
                     continue
                 categoria, funcion = coincidencia
                 parcial = procesar_lote_documentos(
@@ -481,7 +508,10 @@ def main() -> None:
             if no_encontrados:
                 st.warning(f"Archivos sin coincidencia en el diccionario: {no_encontrados}.")
             if sin_funcion:
-                st.warning(f"Tipos documentales todavía sin extractor: {sin_funcion}.")
+                st.warning(
+                    "Archivos reconocidos únicamente por la clasificación anterior "
+                    f"y no analizados: {sin_funcion}."
+                )
     else:
         st.warning(f"No hay documentos cargados en la carpeta de {pagina_actual}.")
 
@@ -505,8 +535,10 @@ def main() -> None:
         tabs = st.tabs([f"📊 {concepto}" for concepto, _ in conceptos])
         for tab, (concepto, documentos) in zip(tabs, conceptos):
             with tab:
-                if concepto in {"CONTRATO", "CNT_CNT"}:
-                    for documento in documentos:
+                for documento in documentos:
+                    if "datos_extraidos" in documento:
+                        utilidades_ui.renderizar_reporte_catalogo(documento)
+                    elif concepto in {"CONTRATO", "CNT_CNT"}:
                         utilidades_ui.renderizar_reporte_contrato(documento)
 
 
