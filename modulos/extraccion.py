@@ -62,7 +62,11 @@ def _llamar_gemini(
                 contents=contenidos,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
-                    response_schema=esquema,
+                    # `response_schema` convierte el modelo Pydantic al tipo
+                    # propietario del SDK y actualmente serializa
+                    # `additional_properties`, que generateContent rechaza.
+                    # El JSON Schema estándar evita esa conversión defectuosa.
+                    response_json_schema=esquema.model_json_schema(by_alias=True),
                     temperature=0.0,
                 ),
             )
@@ -215,4 +219,3 @@ def procesar_contratos(archivo_pdf) -> ResultadoExtraccion:
     documento sea suficiente; en caso contrario explica brevemente la carencia.
     """
     return procesar_documento(archivo_pdf, prompt, Contrato)
-
