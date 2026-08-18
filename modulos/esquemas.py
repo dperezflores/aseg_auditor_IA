@@ -6,7 +6,9 @@ from pydantic import BaseModel, ConfigDict, Field, RootModel
 
 
 class ModeloASEG(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    # Gemini generateContent no admite `additionalProperties` dentro de
+    # `response_schema`. Pydantic lo agrega al usar `extra="forbid"`.
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class Estimacion(ModeloASEG):
