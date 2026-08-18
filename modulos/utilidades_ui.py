@@ -5,6 +5,8 @@ import json
 import os
 import hashlib
 
+from modulos.esquemas import DatosContrato
+
 
 # ==========================================
 # 💾 SISTEMA DE CACHÉ EN DISCO
@@ -200,9 +202,20 @@ def renderizar_reporte_contrato(datos_completos):
     nombre_archivo = datos_completos.get('Archivo Origen', 'Documento Desconocido')
 
     # --- 1. DATOS DE LA TABLA PRINCIPAL ---
+    # PostgreSQL JSONB no conserva el orden de las llaves. La interfaz usa
+    # siempre el orden declarado en el esquema oficial del contrato.
+    orden_solicitado = [
+        campo.alias or nombre
+        for nombre, campo in DatosContrato.model_fields.items()
+    ]
+    conceptos = orden_solicitado + [
+        concepto
+        for concepto in diccionario_datos
+        if concepto not in orden_solicitado
+    ]
     df_datos = pd.DataFrame({
-        "Concepto": list(diccionario_datos.keys()),
-        "Detalle": list(diccionario_datos.values())
+        "Concepto": conceptos,
+        "Detalle": [diccionario_datos.get(concepto, "") for concepto in conceptos]
     })
 
     # --- 2. DATOS DE LA CONCLUSIÓN ---
