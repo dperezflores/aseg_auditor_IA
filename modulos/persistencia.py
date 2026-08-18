@@ -46,15 +46,17 @@ def cargar_catalogo_vigente(procedimiento: str):
                         d.condicion_aplicabilidad, d.admite_multiples,
                         d.patron_consecutivo,
                         COALESCE(
-                            array_agg(DISTINCT f.extension)
-                                FILTER (WHERE f.activo AND f.extension IS NOT NULL),
+                            (
+                                SELECT array_agg(DISTINCT f.extension)
+                                FROM formatos_documento f
+                                WHERE f.catalogo_documento_id = d.id
+                                  AND f.activo
+                                  AND f.extension IS NOT NULL
+                            ),
                             ARRAY['pdf']::text[]
                         ) AS extensiones
                     FROM catalogo_documentos_vigentes d
-                    LEFT JOIN formatos_documento f
-                        ON f.catalogo_documento_id = d.id
                     WHERE d.procedimiento = %s
-                    GROUP BY d.id
                     ORDER BY d.orden_en_procedimiento, d.clave_catalogo
                     """,
                     (procedimiento[:3],),
