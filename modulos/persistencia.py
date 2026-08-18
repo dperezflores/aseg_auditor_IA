@@ -42,7 +42,7 @@ def obtener_o_crear_expediente(
     nombre: str,
     procedimiento: str,
     usuario_externo: str,
-) -> str:
+) -> tuple[str, bool]:
     with _conexion() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -58,18 +58,38 @@ def obtener_o_crear_expediente(
             usuario_id = cur.fetchone()[0]
             cur.execute(
                 """
-                INSERT INTO expedientes (usuario_id, nombre, procedimiento)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (usuario_id, nombre)
-                DO UPDATE SET procedimiento = EXCLUDED.procedimiento,
-                              actualizado_en = now()
-                RETURNING id
+                SELECT id
+                FROM expedientes
+                WHERE usuario_id = %s AND nombre = %s
                 """,
-                (usuario_id, nombre, procedimiento[:3]),
+                (usuario_id, nombre),
             )
-            expediente_id = cur.fetchone()[0]
+            expediente_existente = cur.fetchone()
+
+            if expediente_existente:
+                expediente_id = expediente_existente[0]
+                creado = False
+                cur.execute(
+                    """
+                    UPDATE expedientes
+                    SET procedimiento = %s, actualizado_en = now()
+                    WHERE id = %s
+                    """,
+                    (procedimiento[:3], expediente_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO expedientes (usuario_id, nombre, procedimiento)
+                    VALUES (%s, %s, %s)
+                    RETURNING id
+                    """,
+                    (usuario_id, nombre, procedimiento[:3]),
+                )
+                expediente_id = cur.fetchone()[0]
+                creado = True
         conn.commit()
-    return str(expediente_id)
+    return str(expediente_id), creado
 
 
 def cargar_expediente(expediente_id: str) -> tuple[dict[str, list], set[str]]:
@@ -192,4 +212,3 @@ def serializar_diagnostico() -> str:
         },
         ensure_ascii=False,
     )
-
