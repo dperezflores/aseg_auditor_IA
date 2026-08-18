@@ -27,6 +27,47 @@ def disponible() -> bool:
     return bool(_secreto("DATABASE_URL"))
 
 
+def cargar_catalogo_vigente(procedimiento: str):
+    """Devuelve únicamente definiciones aprobadas de la importación activa."""
+    if not disponible():
+        return []
+
+    from modulos.catalogo import desde_fila
+
+    try:
+        with _conexion() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        d.id, d.clave_catalogo, d.orden_en_procedimiento,
+                        d.procedimiento, d.etapa, d.tipo_documental, d.codigo_base,
+                        d.nombre_documento, d.obligatoriedad,
+                        d.condicion_aplicabilidad, d.admite_multiples,
+                        d.patron_consecutivo,
+                        COALESCE(
+                            array_agg(DISTINCT f.extension)
+                                FILTER (WHERE f.activo AND f.extension IS NOT NULL),
+                            ARRAY['pdf']::text[]
+                        ) AS extensiones
+                    FROM catalogo_documentos_vigentes d
+                    LEFT JOIN formatos_documento f
+                        ON f.catalogo_documento_id = d.id
+                    WHERE d.procedimiento = %s
+                    GROUP BY d.id
+                    ORDER BY d.orden_en_procedimiento, d.clave_catalogo
+                    """,
+                    (procedimiento[:3],),
+                )
+                return [desde_fila(fila) for fila in cur.fetchall()]
+    except Exception as exc:
+        # La migración del catálogo puede desplegarse después del código sin
+        # interrumpir la operación actual de los expedientes.
+        if exc.__class__.__name__ in {"UndefinedTable", "UndefinedColumn"}:
+            return []
+        raise
+
+
 @contextmanager
 def _conexion() -> Iterator[Any]:
     if not disponible():
@@ -122,30 +163,54 @@ def registrar_inicio(
     clave_procesamiento: str,
     modelo: str,
     version_prompt: str,
+    catalogo_documento_id: str | None = None,
+    clave_catalogo: str | None = None,
+    tipo_documental: str | None = None,
 ) -> None:
     with _conexion() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO documentos (
-                    expediente_id, categoria, nombre_archivo, huella_sha256,
-                    clave_procesamiento, estado, modelo, version_prompt, intentos
-                ) VALUES (%s, %s, %s, %s, %s, 'PROCESANDO', %s, %s, 1)
-                ON CONFLICT (expediente_id, clave_procesamiento)
-                DO UPDATE SET estado = 'PROCESANDO', error = NULL,
-                              intentos = documentos.intentos + 1,
-                              actualizado_en = now()
-                """,
-                (
-                    expediente_id,
-                    categoria,
-                    nombre_archivo,
-                    huella,
-                    clave_procesamiento,
-                    modelo,
-                    version_prompt,
-                ),
+            parametros_base = (
+                expediente_id, categoria, nombre_archivo, huella,
+                clave_procesamiento, modelo, version_prompt,
             )
+            cur.execute("SAVEPOINT guardar_documento_catalogado")
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO documentos (
+                        expediente_id, categoria, nombre_archivo, huella_sha256,
+                        clave_procesamiento, estado, modelo, version_prompt, intentos,
+                        catalogo_documento_id, clave_catalogo, tipo_documental
+                    ) VALUES (%s, %s, %s, %s, %s, 'PROCESANDO', %s, %s, 1, %s, %s, %s)
+                    ON CONFLICT (expediente_id, clave_procesamiento)
+                    DO UPDATE SET estado = 'PROCESANDO', error = NULL,
+                                  intentos = documentos.intentos + 1,
+                                  catalogo_documento_id = EXCLUDED.catalogo_documento_id,
+                                  clave_catalogo = EXCLUDED.clave_catalogo,
+                                  tipo_documental = EXCLUDED.tipo_documental,
+                                  actualizado_en = now()
+                    """,
+                    parametros_base + (
+                        catalogo_documento_id, clave_catalogo, tipo_documental,
+                    ),
+                )
+            except Exception as exc:
+                if exc.__class__.__name__ != "UndefinedColumn":
+                    raise
+                cur.execute("ROLLBACK TO SAVEPOINT guardar_documento_catalogado")
+                cur.execute(
+                    """
+                    INSERT INTO documentos (
+                        expediente_id, categoria, nombre_archivo, huella_sha256,
+                        clave_procesamiento, estado, modelo, version_prompt, intentos
+                    ) VALUES (%s, %s, %s, %s, %s, 'PROCESANDO', %s, %s, 1)
+                    ON CONFLICT (expediente_id, clave_procesamiento)
+                    DO UPDATE SET estado = 'PROCESANDO', error = NULL,
+                                  intentos = documentos.intentos + 1,
+                                  actualizado_en = now()
+                    """,
+                    parametros_base,
+                )
         conn.commit()
 
 
