@@ -2,6 +2,68 @@ import pandas as pd
 import io
 import base64
 
+
+COLUMNAS_ESTIMACIONES = [
+    "Numero de estimación",
+    "Fecha de elaboración o de estimación",
+    "De (Periodo de ejecución)",
+    "Hasta (Periodo de ejecución)",
+    "Importe sin IVA",
+    "IVA",
+    "Importe con IVA",
+    "Importe de anticipo",
+    "Amortización",
+    "Deducciones",
+    "Sancion",
+    "Retencion",
+    "Alcance neto",
+    "Archivo Origen",
+]
+
+COLUMNAS_FACTURAS = [
+    "Folio",
+    "Descripción",
+    "Fecha",
+    "Monto total",
+    "Archivo Origen",
+]
+
+COLUMNAS_COMPROBANTES = [
+    "Número",
+    "Fecha de pago",
+    "Importe",
+    "Cuenta bancaria emisora",
+    "Clave de rastreo",
+    "Institución emisora",
+    "Institución receptora",
+    "Cuenta beneficiaria",
+    "Archivo Origen",
+]
+
+
+def _ordenar_columnas(df, columnas_esperadas):
+    """Impone el orden institucional sin depender del orden de JSONB."""
+    for columna in columnas_esperadas:
+        if columna not in df.columns:
+            df[columna] = None
+
+    columnas_finales = ["Archivo Origen"]
+    principales = [
+        columna
+        for columna in columnas_esperadas
+        if columna not in columnas_finales
+    ]
+    adicionales = [
+        columna
+        for columna in df.columns
+        if columna not in columnas_esperadas
+        and columna not in columnas_finales
+    ]
+    finales_presentes = [
+        columna for columna in columnas_finales if columna in df.columns
+    ]
+    return df[principales + adicionales + finales_presentes].copy()
+
 def _limpiar_numeros(df, columnas):
     for col in columnas:
         if col in df.columns:
@@ -25,6 +87,7 @@ def reporte_estimaciones(datos):
     
     df = df.sort_values(by="Fecha de elaboración o de estimación", na_position='first').reset_index(drop=True)
     df = df.map(lambda x: x.upper() if isinstance(x, str) else x)
+    df = _ordenar_columnas(df, COLUMNAS_ESTIMACIONES)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter', datetime_format='dd-mmm-yyyy') as writer:
@@ -53,6 +116,7 @@ def reporte_facturas(datos):
     if 'Orden de estimacion' in df.columns:
         df = df.drop(columns=['Orden de estimacion'])
     df = df.map(lambda x: x.upper() if isinstance(x, str) else x)
+    df = _ordenar_columnas(df, COLUMNAS_FACTURAS)
 
     fila_total = {col: "" for col in df.columns}
     fila_total["Descripción"] = "TOTAL CONSOLIDADO"
@@ -83,6 +147,7 @@ def reporte_comprobantes(datos):
     df = _limpiar_fechas(df)
     df = df.sort_values(by="Fecha de pago", na_position='first').reset_index(drop=True)
     df = df.map(lambda x: x.upper() if isinstance(x, str) else x)
+    df = _ordenar_columnas(df, COLUMNAS_COMPROBANTES)
     
     total_importe = df["Importe"].sum()
     fila_total = {col: "" for col in df.columns}
