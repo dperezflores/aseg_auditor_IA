@@ -1,16 +1,15 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 
 from modulos.aplicabilidad import (
     ArchivoExpediente,
-    NO,
     PENDIENTE,
-    SI,
     conciliar_expediente,
     evaluar_aplicabilidad,
 )
-from modulos.catalogo import DocumentoCatalogo
+from modulos.catalogo import DocumentoCatalogo, ReglaCatalogo
 
 
 def documento(
@@ -47,33 +46,52 @@ class AplicabilidadTest(unittest.TestCase):
         self.assertEqual(conciliacion.resultados[0].aplicabilidad, "PENDIENTE")
         self.assertEqual(conciliacion.resultados[0].estado, "PENDIENTE")
 
-    def test_anticipo_activa_factura_y_garantia(self):
-        factura = documento("CNT_LPU_ANT_1", "CNT_ANT", multiples=True)
-        garantia = documento("CNT_LPU_GAN", "CNT_GAN")
-        for definicion in (factura, garantia):
-            self.assertEqual(
-                evaluar_aplicabilidad(definicion, {"otorga_anticipo": SI})[0],
-                "APLICA",
-            )
-            self.assertEqual(
-                evaluar_aplicabilidad(definicion, {"otorga_anticipo": NO})[0],
-                "NO_APLICA",
-            )
-
-    def test_excepcion_invierte_garantia_cumplimiento(self):
-        garantia = documento("CNT_LPU_CUM", "CNT_CUM")
-        self.assertEqual(
-            evaluar_aplicabilidad(
-                garantia,
-                {"excepcion_garantia_cumplimiento": SI},
-            )[0],
-            "NO_APLICA",
+    def test_regla_usa_dato_extraido_sin_preguntar_al_usuario(self):
+        garantia = replace(
+            documento("CNT_LPU_GAN", "CNT_GAN"),
+            reglas_aplicabilidad=(
+                ReglaCatalogo(
+                    id="r1", orden=1, tipo_regla="CONDICIONAL",
+                    fuente="CAMPO_EXTRAIDO", fuente_tipo_documental="CNT_CNT",
+                    fuente_campo="otorga_anticipo", operador="IGUAL",
+                    valor_esperado="Sí", resultado_verdadero="APLICA",
+                    resultado_falso="NO_APLICA", resultado_sin_dato="PENDIENTE",
+                    justificacion="Depende del anticipo del contrato.",
+                    estado_revision="Aprobado",
+                ),
+            ),
         )
         self.assertEqual(
             evaluar_aplicabilidad(
                 garantia,
-                {"excepcion_garantia_cumplimiento": NO},
+                {"campos_extraidos": {"CNT_CNT": {"otorga_anticipo": "Sí"}}},
             )[0],
+            "APLICA",
+        )
+        self.assertEqual(
+            evaluar_aplicabilidad(
+                garantia,
+                {"campos_extraidos": {"CNT_CNT": {"otorga_anticipo": "No"}}},
+            )[0],
+            "NO_APLICA",
+        )
+
+    def test_regla_documento_presente(self):
+        anexo = replace(
+            documento("PPP_LPU_ANX", "PPP_ANX"),
+            reglas_aplicabilidad=(
+                ReglaCatalogo(
+                    id="r2", orden=1, tipo_regla="CONDICIONAL",
+                    fuente="DOCUMENTO_PRESENTE", fuente_tipo_documental="PPP_CNV",
+                    fuente_campo=None, operador="EXISTE", valor_esperado=None,
+                    resultado_verdadero="APLICA", resultado_falso="NO_APLICA",
+                    resultado_sin_dato="PENDIENTE", justificacion="Anexo del convenio.",
+                    estado_revision="Aprobado",
+                ),
+            ),
+        )
+        self.assertEqual(
+            evaluar_aplicabilidad(anexo, {"documentos_presentes": {"PPP_CNV"}})[0],
             "APLICA",
         )
 
@@ -114,10 +132,7 @@ class AplicabilidadTest(unittest.TestCase):
 
     def test_valores_invalidos_permanecen_pendientes(self):
         convenio = documento("PPP_LPU_CNV", "PPP_CNV")
-        estado, _ = evaluar_aplicabilidad(
-            convenio,
-            {"requiere_convenio_colaboracion": "tal vez"},
-        )
+        estado, _ = evaluar_aplicabilidad(convenio, {})
         self.assertEqual(estado, "PENDIENTE")
         self.assertEqual(PENDIENTE, "PENDIENTE")
 

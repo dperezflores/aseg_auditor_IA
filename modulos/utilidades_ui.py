@@ -387,7 +387,12 @@ def renderizar_reporte_catalogo(analisis):
     st.markdown("<hr style='margin:35px 0;'>", unsafe_allow_html=True)
 
 
-def renderizar_conciliacion_expediente(conciliacion, etapa=None):
+def renderizar_conciliacion_expediente(
+    conciliacion,
+    etapa=None,
+    al_analizar=None,
+    al_ver_analisis=None,
+):
     """Muestra el control documental sin convertir pendientes en faltantes."""
     resultados = [
         resultado
@@ -429,34 +434,107 @@ def renderizar_conciliacion_expediente(conciliacion, etapa=None):
         "PENDIENTE": "Pendiente",
         "OPCIONAL": "Opcional",
     }
+    etiquetas_ia = {
+        "SIN_ANALIZAR": "⚪ Sin analizar",
+        "PROCESANDO": "🔵 Procesando",
+        "CUMPLE": "✅ Cumple",
+        "NO_CUMPLE": "❌ No cumple",
+        "REVISION_REQUERIDA": "⚠️ Revisión requerida",
+        "ERROR": "🔴 Error",
+    }
     tabla = pd.DataFrame(
         [
             {
                 "Orden": resultado.documento.orden,
                 "Etapa": resultado.documento.etapa,
-                "Clave": resultado.documento.clave_catalogo,
                 "Documento": resultado.documento.nombre,
                 "Obligatoriedad": resultado.documento.obligatoriedad,
-                "Condición del catálogo": resultado.documento.condicion_aplicabilidad,
                 "Aplicabilidad": etiquetas_aplicabilidad.get(
                     resultado.aplicabilidad,
                     resultado.aplicabilidad,
                 ),
                 "Estado": etiquetas_estado.get(resultado.estado, resultado.estado),
-                "Archivo(s)": ", ".join(
+                "Archivos": ", ".join(
                     archivo.nombre for archivo in resultado.archivos
                 ) or "—",
-                "Justificación": resultado.justificacion,
-                "Observación": resultado.observacion,
+                "Procedimientos aplicables": "\n".join(
+                    f"{item.orden}. {item.procedimiento}"
+                    for item in resultado.documento.procedimientos
+                ) or "Sin procedimientos configurados",
+                "Resultado IA": etiquetas_ia.get(
+                    resultado.resultado_ia,
+                    resultado.resultado_ia,
+                ),
+                "Acciones": (
+                    "Subir · Analizar · Ver análisis"
+                    if resultado.archivos
+                    else "Subir documento"
+                ),
             }
             for resultado in resultados
         ]
-    ).sort_values(["Orden", "Clave"])
+    ).sort_values(["Orden"])
     st.dataframe(
         tabla.drop(columns=["Orden"]),
         hide_index=True,
         use_container_width=True,
     )
+
+    if al_analizar or al_ver_analisis:
+        st.markdown("#### Acciones del documento")
+        por_clave = {
+            item.documento.clave_catalogo: item for item in resultados
+        }
+        clave = st.selectbox(
+            "Seleccione un documento",
+            list(por_clave),
+            format_func=lambda valor: (
+                f"{por_clave[valor].documento.nombre} · "
+                f"{etiquetas_estado.get(por_clave[valor].estado, por_clave[valor].estado)}"
+            ),
+            key=f"accion_documento_{etapa or 'TODAS'}",
+        )
+        seleccionado = por_clave[clave]
+        documento = seleccionado.documento
+        archivo_nuevo = st.file_uploader(
+            "Subir o sustituir documento",
+            type=list(documento.extensiones),
+            accept_multiple_files=False,
+            key=f"accion_upload_{documento.id}",
+        )
+        columnas_accion = st.columns(4)
+        archivo_analisis = archivo_nuevo
+        if al_analizar:
+            etiqueta = (
+                "Volver a analizar con IA"
+                if seleccionado.resultado_ia not in {"SIN_ANALIZAR", "ERROR"}
+                else "Analizar con IA"
+            )
+            if columnas_accion[0].button(
+                etiqueta,
+                key=f"analizar_{documento.id}",
+                disabled=archivo_analisis is None,
+            ):
+                al_analizar(archivo_analisis, documento)
+        if al_ver_analisis and columnas_accion[1].button(
+            "Ver análisis con IA",
+            key=f"ver_analisis_{documento.id}",
+            disabled=seleccionado.resultado_ia == "SIN_ANALIZAR",
+        ):
+            al_ver_analisis(documento)
+        with columnas_accion[2].popover("Ver criterios"):
+            st.write(documento.criterios_identificacion_ia or "Sin criterios registrados.")
+            st.caption(documento.fundamento_normativo or "Sin fundamento registrado.")
+        if columnas_accion[3].button(
+            "Resolver duplicados",
+            key=f"duplicados_{documento.id}",
+            disabled=seleccionado.estado != "DUPLICADO",
+        ):
+            st.info(
+                "Conserve el archivo correcto y retire los duplicados desde el panel lateral."
+            )
+        if archivo_nuevo is None:
+            st.caption("Para analizar desde esta tabla, primero seleccione el PDF en 'Subir o sustituir documento'.")
 
     no_reconocidos = conciliacion.no_reconocidos
     if etapa is not None:

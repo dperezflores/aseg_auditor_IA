@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from modulos.catalogo import DocumentoCatalogo, clasificar_archivo
+from modulos.catalogo import DocumentoCatalogo, ReglaCatalogo, clasificar_archivo
 
 
 SI = "SI"
@@ -20,12 +20,6 @@ class ArchivoExpediente:
 
 
 @dataclass(frozen=True)
-class ReglaAplicabilidad:
-    campo: str
-    valor_que_aplica: str = SI
-
-
-@dataclass(frozen=True)
 class ResultadoDocumento:
     documento: DocumentoCatalogo
     aplicabilidad: str
@@ -33,6 +27,7 @@ class ResultadoDocumento:
     archivos: tuple[ArchivoExpediente, ...]
     justificacion: str
     observacion: str = ""
+    resultado_ia: str = "SIN_ANALIZAR"
 
 
 @dataclass(frozen=True)
@@ -44,29 +39,68 @@ class ConciliacionExpediente:
         return sum(resultado.estado == estado for resultado in self.resultados)
 
 
-# Estas reglas usan identificadores estables del catálogo. Si un documento
-# condicional no está registrado, permanece pendiente en lugar de inferirse.
-REGLAS_POR_TIPO = {
-    "PPP_CNV": ReglaAplicabilidad("requiere_convenio_colaboracion"),
-    "PPP_EIA": ReglaAplicabilidad("requiere_estudio_impacto"),
-    "PPP_ESP": ReglaAplicabilidad("requiere_especificaciones"),
-    "CNT_ANT": ReglaAplicabilidad("otorga_anticipo"),
-    "CNT_GAN": ReglaAplicabilidad("otorga_anticipo"),
-    "CNT_CUM": ReglaAplicabilidad(
-        "excepcion_garantia_cumplimiento",
-        valor_que_aplica=NO,
-    ),
-}
+def _normalizar(valor):
+    if isinstance(valor, str):
+        return valor.strip().casefold()
+    return valor
 
 
-def _valor_contexto(contexto: Mapping[str, str], campo: str) -> str:
-    valor = str(contexto.get(campo, PENDIENTE)).strip().upper()
-    return valor if valor in {SI, NO} else PENDIENTE
+def _valor_regla(regla: ReglaCatalogo, contexto: Mapping):
+    if regla.fuente == "VALOR_FIJO":
+        return True, True
+    if regla.fuente == "DOCUMENTO_PRESENTE":
+        presentes = contexto.get("documentos_presentes", set())
+        return regla.fuente_tipo_documental in presentes, True
+
+    campos = contexto.get("campos_extraidos", {})
+    por_tipo = campos.get(regla.fuente_tipo_documental or "", {})
+    if regla.fuente_campo in por_tipo:
+        return por_tipo[regla.fuente_campo], True
+    if regla.fuente_campo in campos:
+        return campos[regla.fuente_campo], True
+    return None, False
+
+
+def _comparar(valor, operador: str, esperado) -> bool:
+    if operador == "EXISTE":
+        return valor not in (None, "", [], {})
+    if operador == "NO_EXISTE":
+        return valor in (None, "", [], {})
+    if operador == "IGUAL":
+        return _normalizar(valor) == _normalizar(esperado)
+    if operador == "DISTINTO":
+        return _normalizar(valor) != _normalizar(esperado)
+    if operador == "CONTIENE":
+        return _normalizar(str(esperado)) in _normalizar(str(valor))
+    try:
+        numero, referencia = float(valor), float(esperado)
+    except (TypeError, ValueError):
+        return False
+    return numero > referencia if operador == "MAYOR_QUE" else numero < referencia
+
+
+def _evaluar_regla(regla: ReglaCatalogo, contexto: Mapping) -> tuple[str, str]:
+    if regla.tipo_regla == "SIEMPRE":
+        return "APLICA", regla.justificacion or "La regla aprobada indica que siempre aplica."
+    if regla.tipo_regla == "NO_APLICA":
+        return "NO_APLICA", regla.justificacion or "La regla aprobada indica que no aplica."
+
+    valor, disponible = _valor_regla(regla, contexto)
+    if not disponible:
+        return regla.resultado_sin_dato, (
+            regla.justificacion
+            or "Todavía no existe información suficiente para resolver la regla."
+        )
+    cumple = _comparar(valor, regla.operador, regla.valor_esperado)
+    return (
+        regla.resultado_verdadero if cumple else regla.resultado_falso,
+        regla.justificacion or "Resultado calculado con una regla aprobada del catálogo.",
+    )
 
 
 def evaluar_aplicabilidad(
     documento: DocumentoCatalogo,
-    contexto: Mapping[str, str],
+    contexto: Mapping,
 ) -> tuple[str, str]:
     obligatoriedad = documento.obligatoriedad.strip().casefold()
     if obligatoriedad == "obligatorio":
@@ -81,22 +115,20 @@ def evaluar_aplicabilidad(
             "La obligatoriedad del catálogo todavía no permite determinar su aplicación.",
         )
 
-    regla = REGLAS_POR_TIPO.get(documento.tipo_documental)
-    if not regla:
+    if not documento.reglas_aplicabilidad:
         return (
             "PENDIENTE",
             "No existe una regla determinística aprobada para esta condición.",
         )
 
-    valor = _valor_contexto(contexto, regla.campo)
-    if valor == PENDIENTE:
-        return (
-            "PENDIENTE",
-            "Falta responder un dato del expediente para evaluar la condición.",
-        )
-    if valor == regla.valor_que_aplica:
-        return "APLICA", "La respuesta registrada en el expediente activa la condición."
-    return "NO_APLICA", "La respuesta registrada en el expediente no activa la condición."
+    evaluadas = [_evaluar_regla(regla, contexto) for regla in documento.reglas_aplicabilidad]
+    detalles = " ".join(dict.fromkeys(detalle for _, detalle in evaluadas))
+    estados = {estado for estado, _ in evaluadas}
+    if "NO_APLICA" in estados:
+        return "NO_APLICA", detalles
+    if estados == {"APLICA"}:
+        return "APLICA", detalles
+    return "PENDIENTE", detalles
 
 
 def _archivos_unicos(
@@ -112,7 +144,7 @@ def _archivos_unicos(
 def conciliar_expediente(
     documentos: Iterable[DocumentoCatalogo],
     archivos: Iterable[ArchivoExpediente],
-    contexto: Mapping[str, str],
+    contexto: Mapping,
 ) -> ConciliacionExpediente:
     definiciones = tuple(sorted(documentos, key=lambda item: item.orden))
     encontrados: dict[str, list[ArchivoExpediente]] = {
@@ -133,10 +165,22 @@ def conciliar_expediente(
         else:
             no_reconocidos.append(archivo)
 
+    contexto_evaluacion = dict(contexto)
+    contexto_evaluacion["documentos_presentes"] = set(
+        contexto.get("documentos_presentes", set())
+    ).union(
+        documento.tipo_documental
+        for documento in definiciones
+        if encontrados[documento.id]
+    )
+
     resultados = []
     for documento in definiciones:
         coincidencias = tuple(encontrados[documento.id])
-        aplicabilidad, justificacion = evaluar_aplicabilidad(documento, contexto)
+        aplicabilidad, justificacion = evaluar_aplicabilidad(
+            documento,
+            contexto_evaluacion,
+        )
         observacion = ""
 
         if aplicabilidad == "APLICA":
@@ -171,6 +215,12 @@ def conciliar_expediente(
                 archivos=coincidencias,
                 justificacion=justificacion,
                 observacion=observacion,
+                resultado_ia=str(
+                    contexto.get("resultados_ia", {}).get(
+                        documento.clave_catalogo,
+                        "SIN_ANALIZAR",
+                    )
+                ),
             )
         )
 
