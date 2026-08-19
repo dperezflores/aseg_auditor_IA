@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import unittest
 
-from modulos.catalogo import DocumentoCatalogo, clasificar_archivo, extensiones_por_etapa
+from modulos.catalogo import (
+    DocumentoCatalogo,
+    clasificar_archivo,
+    campos_operativos,
+    desde_fila,
+    extensiones_por_etapa,
+)
 
 
 def documento(
@@ -58,7 +64,57 @@ class CatalogoTest(unittest.TestCase):
         ]
         self.assertEqual(extensiones_por_etapa(documentos, "CNT"), ["docx", "pdf"])
 
+    def test_deriva_campos_desde_datos_clave(self):
+        convenio = documento("PPP_LPU_CNV", "PPP_LPU_CNV")
+        convenio = DocumentoCatalogo(
+            **{
+                **convenio.__dict__,
+                "datos_clave_a_validar": "Partes; objeto; firmas.",
+            }
+        )
+        campos = campos_operativos(convenio)
+        self.assertEqual(
+            [campo.nombre_tecnico for campo in campos],
+            ["partes", "objeto", "firmas"],
+        )
+        self.assertEqual([campo.orden for campo in campos], [1, 2, 3])
+
+    def test_desde_fila_carga_campos_y_procedimientos(self):
+        fila = (
+            "id", "CNT_LPU_CNT", 25, "LPU", "CNT", "CNT_CNT",
+            "CNT_LPU_CNT", "Contrato", "Obligatorio", "Siempre", False,
+            None, ["pdf"], "1.0", "Reconocer contrato", "Número; monto",
+            "Ley aplicable",
+            [
+                {
+                    "orden": 1,
+                    "nombre_tecnico": "numero",
+                    "etiqueta": "Número",
+                    "tipo_dato": "Texto",
+                    "obligatorio": True,
+                    "instruccion": "Extraer el número",
+                    "estado_revision": "Pendiente",
+                }
+            ],
+            [
+                {
+                    "orden": 1,
+                    "procedimiento_id": "CNT_CNT_P01",
+                    "procedimiento": "Verificar correspondencia",
+                    "resultado_esperado": None,
+                    "evidencia_requerida": None,
+                    "riesgo_codigo": "07_OBP_13",
+                    "estado_revision": "Pendiente",
+                }
+            ],
+        )
+        definicion = desde_fila(fila)
+        self.assertEqual(definicion.campos[0].nombre_tecnico, "numero")
+        self.assertEqual(
+            definicion.procedimientos[0].procedimiento_id,
+            "CNT_CNT_P01",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -103,6 +103,38 @@ class Contrato(ModeloASEG):
     procedimientos: ProcedimientosContrato
 
 
+class IdentificacionCatalogo(ModeloASEG):
+    corresponde: Literal["SI", "NO", "INDETERMINADO"]
+    tipo_detectado: str
+    justificacion: str
+    paginas: list[int] = Field(default_factory=list)
+
+
+class DatoCatalogoIA(ModeloASEG):
+    nombre_tecnico: str
+    valor: str
+    encontrado: bool
+    evidencia: str
+    paginas: list[int] = Field(default_factory=list)
+    confianza: Literal["Alta", "Media", "Baja"]
+
+
+class ProcedimientoCatalogoIA(ModeloASEG):
+    procedimiento_id: str
+    resultado: Literal["CUMPLE", "NO_CUMPLE", "NO_DETERMINABLE", "NO_APLICA"]
+    detalle: str
+    evidencia: str
+    paginas: list[int] = Field(default_factory=list)
+
+
+class AnalisisDocumentoCatalogo(ModeloASEG):
+    identificacion: IdentificacionCatalogo
+    datos_extraidos: list[DatoCatalogoIA] = Field(default_factory=list)
+    procedimientos: list[ProcedimientoCatalogoIA] = Field(default_factory=list)
+    conclusion: str
+    advertencias: list[str] = Field(default_factory=list)
+
+
 class ResultadoExtraccion(ModeloASEG):
     estado: Literal["OK", "ERROR"]
     datos: list[dict[str, Any]] = Field(default_factory=list)
