@@ -200,6 +200,87 @@ def cargar_expediente(expediente_id: str) -> tuple[dict[str, list], set[str]]:
     return historial, procesados
 
 
+def cargar_control_expediente(expediente_id: str) -> tuple[dict[str, str], list[dict]]:
+    """Carga respuestas de aplicabilidad y documentos registrados en Neon."""
+    datos_aplicabilidad: dict[str, str] = {}
+    archivos: list[dict] = []
+
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SAVEPOINT cargar_aplicabilidad")
+            try:
+                cur.execute(
+                    """
+                    SELECT datos_aplicabilidad
+                    FROM expedientes
+                    WHERE id = %s
+                    """,
+                    (expediente_id,),
+                )
+                fila = cur.fetchone()
+                datos_aplicabilidad = dict((fila and fila[0]) or {})
+            except Exception as exc:
+                if exc.__class__.__name__ != "UndefinedColumn":
+                    raise
+                cur.execute("ROLLBACK TO SAVEPOINT cargar_aplicabilidad")
+
+            cur.execute(
+                """
+                SELECT nombre_archivo, huella_sha256, estado,
+                       clave_catalogo, tipo_documental
+                FROM documentos
+                WHERE expediente_id = %s
+                ORDER BY creado_en, nombre_archivo
+                """,
+                (expediente_id,),
+            )
+            archivos = [
+                {
+                    "nombre": nombre,
+                    "huella": huella,
+                    "estado_procesamiento": estado,
+                    "clave_catalogo": clave_catalogo,
+                    "tipo_documental": tipo_documental,
+                    "origen": "guardado",
+                }
+                for nombre, huella, estado, clave_catalogo, tipo_documental
+                in cur.fetchall()
+            ]
+    return datos_aplicabilidad, archivos
+
+
+def guardar_datos_aplicabilidad(
+    expediente_id: str,
+    datos: dict[str, str],
+) -> None:
+    """Persiste únicamente respuestas normalizadas del motor determinístico."""
+    from modulos.aplicabilidad import NO, PENDIENTE, SI
+    from psycopg.types.json import Jsonb
+
+    permitidos = {SI, NO, PENDIENTE}
+    normalizados = {
+        str(clave): str(valor).upper()
+        if str(valor).upper() in permitidos
+        else PENDIENTE
+        for clave, valor in datos.items()
+    }
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE expedientes
+                SET datos_aplicabilidad = %s,
+                    aplicabilidad_actualizada_en = now(),
+                    actualizado_en = now()
+                WHERE id = %s
+                """,
+                (Jsonb(normalizados), expediente_id),
+            )
+            if cur.rowcount != 1:
+                raise RuntimeError("No se encontró el expediente activo")
+        conn.commit()
+
+
 def registrar_inicio(
     expediente_id: str,
     categoria: str,
