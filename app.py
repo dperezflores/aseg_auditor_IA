@@ -5,7 +5,14 @@ import os
 
 import streamlit as st
 
-from modulos import catalogo, extraccion, generador_excel, persistencia, utilidades_ui
+from modulos import (
+    aplicabilidad,
+    catalogo,
+    extraccion,
+    generador_excel,
+    persistencia,
+    utilidades_ui,
+)
 
 
 st.set_page_config(
@@ -26,6 +33,104 @@ def _secreto(nombre: str, default: str = "") -> str:
 
 def _huella_sha256(archivo) -> str:
     return hashlib.sha256(archivo.getvalue()).hexdigest()
+
+
+PREGUNTAS_APLICABILIDAD = (
+    (
+        "requiere_convenio_colaboracion",
+        "¿La ejecución requiere convenio de colaboración o coordinación institucional?",
+        "Incluye aportaciones, autorizaciones, administración conjunta o transferencia de recursos.",
+    ),
+    (
+        "requiere_estudio_impacto",
+        "¿La obra requiere estudio, dictamen o evaluación de impacto?",
+        "Puede ser ambiental, urbano, de movilidad, protección civil u otro sectorial.",
+    ),
+    (
+        "requiere_especificaciones",
+        "¿La obra o servicio requiere especificaciones técnicas de construcción?",
+        "Considere especificaciones generales, particulares o técnicas.",
+    ),
+    (
+        "otorga_anticipo",
+        "¿El contrato contempla el otorgamiento de anticipo?",
+        "Esta respuesta controla la factura y la garantía de anticipo.",
+    ),
+    (
+        "excepcion_garantia_cumplimiento",
+        "¿Existe una excepción legal documentada para omitir la garantía de cumplimiento?",
+        "Responda Sí únicamente cuando la excepción esté fundada y documentada.",
+    ),
+)
+
+
+def _archivos_para_conciliar(archivos_subidos) -> list[aplicabilidad.ArchivoExpediente]:
+    archivos = [
+        aplicabilidad.ArchivoExpediente(
+            nombre=registro.get("nombre", ""),
+            huella=registro.get("huella", ""),
+            origen=registro.get("origen", "guardado"),
+            clave_catalogo=registro.get("clave_catalogo") or "",
+        )
+        for registro in st.session_state.get("archivos_guardados", [])
+        if registro.get("nombre")
+    ]
+    for grupo in archivos_subidos.values():
+        for archivo in grupo:
+            archivos.append(
+                aplicabilidad.ArchivoExpediente(
+                    nombre=archivo.name,
+                    huella=_huella_sha256(archivo),
+                    origen="cargado",
+                )
+            )
+    return archivos
+
+
+def _formulario_datos_aplicabilidad() -> None:
+    st.markdown("#### Datos para determinar documentos aplicables")
+    st.caption(
+        "Las respuestas se evalúan mediante reglas determinísticas. "
+        "Por determinar nunca se considera automáticamente como incumplimiento."
+    )
+    opciones = {
+        "Por determinar": aplicabilidad.PENDIENTE,
+        "Sí": aplicabilidad.SI,
+        "No": aplicabilidad.NO,
+    }
+    etiquetas = list(opciones)
+    actuales = st.session_state.get("datos_aplicabilidad", {})
+    respuestas = {}
+    with st.form("form_datos_aplicabilidad"):
+        for clave, pregunta, ayuda in PREGUNTAS_APLICABILIDAD:
+            valor_actual = actuales.get(clave, aplicabilidad.PENDIENTE)
+            indice = list(opciones.values()).index(
+                valor_actual if valor_actual in opciones.values() else aplicabilidad.PENDIENTE
+            )
+            etiqueta = st.selectbox(
+                pregunta,
+                etiquetas,
+                index=indice,
+                help=ayuda,
+                key=f"aplicabilidad_{clave}",
+            )
+            respuestas[clave] = opciones[etiqueta]
+        guardar = st.form_submit_button(
+            "Guardar datos y actualizar lista esperada",
+            type="primary",
+        )
+
+    if guardar:
+        if st.session_state.usar_neon:
+            persistencia.guardar_datos_aplicabilidad(
+                st.session_state.expediente_id,
+                respuestas,
+            )
+        st.session_state.datos_aplicabilidad = respuestas
+        st.session_state.mensaje_aplicabilidad = (
+            "Datos guardados. La lista de documentos esperados fue actualizada."
+        )
+        st.rerun()
 
 
 def _version_prompt(
@@ -62,6 +167,8 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
 
     st.session_state.expediente_id = None
     st.session_state.usar_neon = False
+    datos_aplicabilidad = {}
+    archivos_guardados = []
     accion = "local"
     if persistencia.disponible():
         try:
@@ -71,6 +178,9 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
                 usuario,
             )
             historial, procesados = persistencia.cargar_expediente(expediente_id)
+            datos_aplicabilidad, archivos_guardados = (
+                persistencia.cargar_control_expediente(expediente_id)
+            )
             st.session_state.expediente_id = expediente_id
             st.session_state.usar_neon = True
             accion = "creado" if creado else "abierto"
@@ -85,6 +195,8 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
 
     st.session_state.historial = historial
     st.session_state.archivos_procesados = procesados
+    st.session_state.datos_aplicabilidad = datos_aplicabilidad
+    st.session_state.archivos_guardados = archivos_guardados
     st.session_state.estado_cargado = llave
     return accion
 
@@ -310,6 +422,21 @@ def main() -> None:
                             estado = "✅" if clave in st.session_state.archivos_procesados else "⏳"
                             st.caption(f"{estado} {archivo.name}")
 
+    conciliacion = aplicabilidad.conciliar_expediente(
+        documentos_catalogo,
+        _archivos_para_conciliar(archivos_subidos),
+        st.session_state.get("datos_aplicabilidad", {}),
+    )
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("#### Control de integración")
+        st.caption(
+            f"Encontrados: {conciliacion.contar('ENCONTRADO')} · "
+            f"Faltantes: {conciliacion.contar('FALTANTE')} · "
+            f"No aplicables: {conciliacion.contar('NO_APLICABLE')} · "
+            f"Pendientes: {conciliacion.contar('PENDIENTE')}"
+        )
+
     opciones_nav = ["🏠 Inicio", "PPP", "ADJ", "CNT", "EJE", "ETR"]
     pagina_actual = st.radio(
         "Navegación",
@@ -372,10 +499,20 @@ def main() -> None:
             "Suba los documentos desde el panel lateral. Los resultados se guardan "
             "por expediente y se vuelven a procesar cuando cambia el modelo o el prompt."
         )
+        mensaje_aplicabilidad = st.session_state.pop(
+            "mensaje_aplicabilidad",
+            None,
+        )
+        if mensaje_aplicabilidad:
+            st.success(mensaje_aplicabilidad)
+        _formulario_datos_aplicabilidad()
+        st.markdown("### Lista automática y conciliación documental")
+        utilidades_ui.renderizar_conciliacion_expediente(conciliacion)
         return
 
     if pagina_actual == "EJE":
         st.markdown("### Etapa: Ejecución - Análisis documental")
+        utilidades_ui.renderizar_conciliacion_expediente(conciliacion, "EJE")
         disponibles = {}
         for subcategoria in estructura_expediente["EJE"]["subcarpetas"]:
             for archivo in archivos_subidos.get(subcategoria, []):
@@ -433,6 +570,10 @@ def main() -> None:
         return
 
     st.markdown(f"### Etapa: {estructura_expediente[pagina_actual]['nombre']}")
+    utilidades_ui.renderizar_conciliacion_expediente(
+        conciliacion,
+        pagina_actual,
+    )
     archivos_etapa = archivos_subidos.get(
         estructura_expediente[pagina_actual]["key_raiz"], []
     )

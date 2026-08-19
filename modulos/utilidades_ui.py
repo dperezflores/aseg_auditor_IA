@@ -385,3 +385,88 @@ def renderizar_reporte_catalogo(analisis):
         st.warning(str(advertencia))
 
     st.markdown("<hr style='margin:35px 0;'>", unsafe_allow_html=True)
+
+
+def renderizar_conciliacion_expediente(conciliacion, etapa=None):
+    """Muestra el control documental sin convertir pendientes en faltantes."""
+    resultados = [
+        resultado
+        for resultado in conciliacion.resultados
+        if etapa is None or resultado.documento.etapa == etapa
+    ]
+    if not resultados:
+        st.info("No hay definiciones aprobadas del catálogo para mostrar.")
+        return
+
+    encontrados = sum(resultado.estado == "ENCONTRADO" for resultado in resultados)
+    faltantes = sum(resultado.estado == "FALTANTE" for resultado in resultados)
+    no_aplicables = sum(
+        resultado.estado in {"NO_APLICABLE", "NO_REQUERIDO"}
+        for resultado in resultados
+    )
+    pendientes = sum(resultado.estado == "PENDIENTE" for resultado in resultados)
+    duplicados = sum(resultado.estado == "DUPLICADO" for resultado in resultados)
+
+    columnas = st.columns(5)
+    for columna, etiqueta, valor in zip(
+        columnas,
+        ["Encontrados", "Faltantes", "No aplicables", "Pendientes", "Duplicados"],
+        [encontrados, faltantes, no_aplicables, pendientes, duplicados],
+    ):
+        columna.metric(etiqueta, valor)
+
+    etiquetas_estado = {
+        "ENCONTRADO": "✅ Encontrado",
+        "FALTANTE": "❌ Faltante",
+        "NO_APLICABLE": "➖ No aplicable",
+        "NO_REQUERIDO": "➖ No requerido",
+        "PENDIENTE": "⚠️ Pendiente de determinar",
+        "DUPLICADO": "🔁 Duplicado",
+    }
+    etiquetas_aplicabilidad = {
+        "APLICA": "Aplica",
+        "NO_APLICA": "No aplica",
+        "PENDIENTE": "Pendiente",
+        "OPCIONAL": "Opcional",
+    }
+    tabla = pd.DataFrame(
+        [
+            {
+                "Orden": resultado.documento.orden,
+                "Etapa": resultado.documento.etapa,
+                "Clave": resultado.documento.clave_catalogo,
+                "Documento": resultado.documento.nombre,
+                "Obligatoriedad": resultado.documento.obligatoriedad,
+                "Condición del catálogo": resultado.documento.condicion_aplicabilidad,
+                "Aplicabilidad": etiquetas_aplicabilidad.get(
+                    resultado.aplicabilidad,
+                    resultado.aplicabilidad,
+                ),
+                "Estado": etiquetas_estado.get(resultado.estado, resultado.estado),
+                "Archivo(s)": ", ".join(
+                    archivo.nombre for archivo in resultado.archivos
+                ) or "—",
+                "Justificación": resultado.justificacion,
+                "Observación": resultado.observacion,
+            }
+            for resultado in resultados
+        ]
+    ).sort_values(["Orden", "Clave"])
+    st.dataframe(
+        tabla.drop(columns=["Orden"]),
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    no_reconocidos = conciliacion.no_reconocidos
+    if etapa is not None:
+        no_reconocidos = tuple(
+            archivo
+            for archivo in no_reconocidos
+            if archivo.nombre.upper().startswith(f"{etapa}_")
+        )
+    if no_reconocidos:
+        st.warning(
+            "Archivos todavía no conciliados con una definición aprobada: "
+            + ", ".join(archivo.nombre for archivo in no_reconocidos)
+        )

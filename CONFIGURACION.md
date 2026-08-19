@@ -67,6 +67,23 @@ La clave de procesamiento incluye una firma de la configuración del documento.
 Cuando cambian sus criterios, campos o procedimientos, el archivo puede volver a
 analizarse aunque el PDF y el modelo sean los mismos.
 
+### Aplicabilidad y control de integración
+
+La lista esperada se genera exclusivamente con las definiciones vigentes y
+aprobadas del procedimiento activo. Los documentos obligatorios siempre se
+consideran aplicables. Los condicionales se evalúan con respuestas estructuradas
+guardadas en el expediente; si falta una respuesta o una regla determinística,
+el documento permanece `PENDIENTE` y no se convierte en faltante.
+
+La conciliación compara la lista esperada con los archivos cargados y con los
+documentos ya registrados en Neon. Distingue encontrados, faltantes, no
+aplicables, pendientes, duplicados y archivos no reconocidos. La condición en
+lenguaje natural del catálogo se muestra como referencia, pero no se interpreta
+automáticamente para declarar que un documento no aplica.
+
+La ampliación correspondiente se documenta en
+`sql/003_aplicabilidad_expedientes.sql`.
+
 Use preferentemente la conexión directa para ejecutar migraciones o importar el
 catálogo. Mantenga la conexión agrupada en `DATABASE_URL` para el uso normal de
 Streamlit.
