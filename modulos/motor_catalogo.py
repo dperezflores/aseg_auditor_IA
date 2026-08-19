@@ -77,6 +77,13 @@ REGLAS OBLIGATORIAS
    contenida en el documento.
 11. La conclusión debe ser técnica, neutral y distinguir hechos, limitaciones y
     asuntos que requieren revisión humana.
+12. En cada procedimiento, el detalle debe explicar qué se verificó, qué se
+    encontró y por qué ese hallazgo conduce al resultado. Para NO_CUMPLE debe
+    identificar expresamente el requisito incumplido, la ausencia o contradicción,
+    su evidencia, página y riesgo. Para NO_DETERMINABLE debe indicar exactamente
+    qué información impidió concluir. No respondas únicamente "OK".
+13. NO_APLICA exige una razón verificable vinculada con el documento o con la
+    propia definición del procedimiento; no lo uses para ocultar falta de datos.
 """.strip()
 
 
@@ -207,3 +214,22 @@ def normalizar_resultado(
             if str(advertencia).strip()
         ],
     }
+
+
+def resultado_global(analisis: dict[str, Any]) -> str:
+    """Resume los procedimientos sin ocultar incumplimientos o incertidumbre."""
+    procedimientos = analisis.get("procedimientos", [])
+    estados = {
+        str(item.get("resultado"))
+        for item in procedimientos
+        if isinstance(item, dict)
+    }
+    if "NO_CUMPLE" in estados:
+        return "NO_CUMPLE"
+    if "NO_DETERMINABLE" in estados:
+        return "REVISION_REQUERIDA"
+    if analisis.get("identificacion", {}).get("corresponde") == "NO":
+        return "NO_CUMPLE"
+    if estados and estados.issubset({"CUMPLE", "NO_APLICA"}):
+        return "CUMPLE"
+    return "REVISION_REQUERIDA"

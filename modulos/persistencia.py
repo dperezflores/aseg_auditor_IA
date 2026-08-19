@@ -689,22 +689,10 @@ def registrar_error(
 
 
 def _resultado_ia_global(datos: list[dict[str, Any]]) -> str:
+    from modulos.motor_catalogo import resultado_global
+
     analisis = datos[0] if datos and isinstance(datos[0], dict) else {}
-    procedimientos = analisis.get("procedimientos", [])
-    estados = {
-        str(item.get("resultado"))
-        for item in procedimientos
-        if isinstance(item, dict)
-    }
-    if "NO_CUMPLE" in estados:
-        return "NO_CUMPLE"
-    if "NO_DETERMINABLE" in estados:
-        return "REVISION_REQUERIDA"
-    if analisis.get("identificacion", {}).get("corresponde") == "NO":
-        return "NO_CUMPLE"
-    if estados and estados.issubset({"CUMPLE", "NO_APLICA"}):
-        return "CUMPLE"
-    return "REVISION_REQUERIDA"
+    return resultado_global(analisis)
 
 
 def serializar_diagnostico() -> str:
