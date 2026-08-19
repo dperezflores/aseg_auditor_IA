@@ -32,6 +32,23 @@ class ProcedimientoCatalogo:
 
 
 @dataclass(frozen=True)
+class ReglaCatalogo:
+    id: str
+    orden: int
+    tipo_regla: str
+    fuente: str
+    fuente_tipo_documental: str | None
+    fuente_campo: str | None
+    operador: str
+    valor_esperado: object
+    resultado_verdadero: str
+    resultado_falso: str
+    resultado_sin_dato: str
+    justificacion: str
+    estado_revision: str = "Pendiente"
+
+
+@dataclass(frozen=True)
 class DocumentoCatalogo:
     id: str
     clave_catalogo: str
@@ -52,6 +69,7 @@ class DocumentoCatalogo:
     fundamento_normativo: str = ""
     campos: tuple[CampoCatalogo, ...] = ()
     procedimientos: tuple[ProcedimientoCatalogo, ...] = ()
+    reglas_aplicabilidad: tuple[ReglaCatalogo, ...] = ()
 
     @property
     def firma_configuracion(self) -> str:
@@ -63,6 +81,7 @@ class DocumentoCatalogo:
             "fundamento": self.fundamento_normativo,
             "campos": [campo.__dict__ for campo in self.campos],
             "procedimientos": [procedimiento.__dict__ for procedimiento in self.procedimientos],
+            "reglas_aplicabilidad": [regla.__dict__ for regla in self.reglas_aplicabilidad],
         }
         serializado = json.dumps(contenido, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(serializado.encode("utf-8")).hexdigest()[:16]
@@ -88,6 +107,24 @@ def _procedimiento_desde_json(datos: dict) -> ProcedimientoCatalogo:
         resultado_esperado=datos.get("resultado_esperado"),
         evidencia_requerida=datos.get("evidencia_requerida"),
         riesgo_codigo=str(datos.get("riesgo_codigo") or "Sin riesgo"),
+        estado_revision=str(datos.get("estado_revision") or "Pendiente"),
+    )
+
+
+def _regla_desde_json(datos: dict) -> ReglaCatalogo:
+    return ReglaCatalogo(
+        id=str(datos.get("id") or ""),
+        orden=int(datos["orden"]),
+        tipo_regla=str(datos["tipo_regla"]),
+        fuente=str(datos["fuente"]),
+        fuente_tipo_documental=datos.get("fuente_tipo_documental"),
+        fuente_campo=datos.get("fuente_campo"),
+        operador=str(datos["operador"]),
+        valor_esperado=datos.get("valor_esperado"),
+        resultado_verdadero=str(datos["resultado_verdadero"]),
+        resultado_falso=str(datos["resultado_falso"]),
+        resultado_sin_dato=str(datos.get("resultado_sin_dato") or "PENDIENTE"),
+        justificacion=str(datos.get("justificacion") or ""),
         estado_revision=str(datos.get("estado_revision") or "Pendiente"),
     )
 
@@ -122,6 +159,65 @@ def desde_fila(fila) -> DocumentoCatalogo:
             _procedimiento_desde_json(datos)
             for datos in (fila[18] or [])
         ) if len(fila) > 18 else (),
+        reglas_aplicabilidad=tuple(
+            _regla_desde_json(datos)
+            for datos in (fila[19] or [])
+        ) if len(fila) > 19 else (),
+    )
+
+
+def a_snapshot(documento: DocumentoCatalogo) -> dict:
+    """Convierte una definición en una fotografía inmutable para un expediente."""
+    return {
+        "id": documento.id,
+        "clave_catalogo": documento.clave_catalogo,
+        "orden": documento.orden,
+        "procedimiento": documento.procedimiento,
+        "etapa": documento.etapa,
+        "tipo_documental": documento.tipo_documental,
+        "codigo_base": documento.codigo_base,
+        "nombre": documento.nombre,
+        "obligatoriedad": documento.obligatoriedad,
+        "condicion_aplicabilidad": documento.condicion_aplicabilidad,
+        "admite_multiples": documento.admite_multiples,
+        "patron_consecutivo": documento.patron_consecutivo,
+        "extensiones": list(documento.extensiones),
+        "version_catalogo": documento.version_catalogo,
+        "criterios_identificacion_ia": documento.criterios_identificacion_ia,
+        "datos_clave_a_validar": documento.datos_clave_a_validar,
+        "fundamento_normativo": documento.fundamento_normativo,
+        "campos": [campo.__dict__ for campo in documento.campos],
+        "procedimientos": [item.__dict__ for item in documento.procedimientos],
+        "reglas_aplicabilidad": [regla.__dict__ for regla in documento.reglas_aplicabilidad],
+    }
+
+
+def desde_snapshot(datos: dict) -> DocumentoCatalogo:
+    return DocumentoCatalogo(
+        id=str(datos["id"]),
+        clave_catalogo=str(datos["clave_catalogo"]),
+        orden=int(datos["orden"]),
+        procedimiento=str(datos["procedimiento"]),
+        etapa=str(datos["etapa"]),
+        tipo_documental=str(datos["tipo_documental"]),
+        codigo_base=str(datos["codigo_base"]),
+        nombre=str(datos["nombre"]),
+        obligatoriedad=str(datos["obligatoriedad"]),
+        condicion_aplicabilidad=str(datos.get("condicion_aplicabilidad") or ""),
+        admite_multiples=bool(datos.get("admite_multiples")),
+        patron_consecutivo=datos.get("patron_consecutivo"),
+        extensiones=tuple(datos.get("extensiones") or ["pdf"]),
+        version_catalogo=str(datos.get("version_catalogo") or ""),
+        criterios_identificacion_ia=str(datos.get("criterios_identificacion_ia") or ""),
+        datos_clave_a_validar=str(datos.get("datos_clave_a_validar") or ""),
+        fundamento_normativo=str(datos.get("fundamento_normativo") or ""),
+        campos=tuple(_campo_desde_json(item) for item in datos.get("campos", [])),
+        procedimientos=tuple(
+            _procedimiento_desde_json(item) for item in datos.get("procedimientos", [])
+        ),
+        reglas_aplicabilidad=tuple(
+            _regla_desde_json(item) for item in datos.get("reglas_aplicabilidad", [])
+        ),
     )
 
 

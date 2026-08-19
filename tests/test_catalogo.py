@@ -8,6 +8,8 @@ from modulos.catalogo import (
     campos_operativos,
     desde_fila,
     extensiones_por_etapa,
+    a_snapshot,
+    desde_snapshot,
 )
 
 
@@ -114,6 +116,13 @@ class CatalogoTest(unittest.TestCase):
             definicion.procedimientos[0].procedimiento_id,
             "CNT_CNT_P01",
         )
+
+    def test_snapshot_conserva_orden_y_definicion(self):
+        original = documento("CNT_LPU_CNT", "CNT_LPU_CNT")
+        restaurado = desde_snapshot(a_snapshot(original))
+        self.assertEqual(restaurado.clave_catalogo, original.clave_catalogo)
+        self.assertEqual(restaurado.orden, original.orden)
+        self.assertEqual(restaurado.firma_configuracion, original.firma_configuracion)
 
 
 if __name__ == "__main__":

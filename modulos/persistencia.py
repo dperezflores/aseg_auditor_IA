@@ -27,6 +27,22 @@ def disponible() -> bool:
     return bool(_secreto("DATABASE_URL"))
 
 
+def cargar_roles_usuario(usuario_externo: str) -> set[str]:
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT ur.rol_codigo
+                FROM usuarios u
+                JOIN usuario_roles ur ON ur.usuario_id = u.id
+                JOIN roles r ON r.codigo = ur.rol_codigo AND r.activo
+                WHERE u.external_id = %s
+                """,
+                (usuario_externo,),
+            )
+            return {fila[0] for fila in cur.fetchall()}
+
+
 def cargar_catalogo_vigente(procedimiento: str):
     """Devuelve únicamente definiciones aprobadas de la importación activa."""
     if not disponible():
@@ -97,7 +113,33 @@ def cargar_catalogo_vigente(procedimiento: str):
                                   AND p.activo
                             ),
                             '[]'::jsonb
-                        ) AS procedimientos
+                        ) AS procedimientos,
+                        COALESCE(
+                            (
+                                SELECT jsonb_agg(
+                                    jsonb_build_object(
+                                        'id', r.id,
+                                        'orden', r.orden,
+                                        'tipo_regla', r.tipo_regla,
+                                        'fuente', r.fuente,
+                                        'fuente_tipo_documental', r.fuente_tipo_documental,
+                                        'fuente_campo', r.fuente_campo,
+                                        'operador', r.operador,
+                                        'valor_esperado', r.valor_esperado,
+                                        'resultado_verdadero', r.resultado_verdadero,
+                                        'resultado_falso', r.resultado_falso,
+                                        'resultado_sin_dato', r.resultado_sin_dato,
+                                        'justificacion', r.justificacion,
+                                        'estado_revision', r.estado_revision
+                                    ) ORDER BY r.orden
+                                )
+                                FROM reglas_aplicabilidad r
+                                WHERE r.catalogo_documento_id = d.id
+                                  AND r.activa
+                                  AND r.estado_revision = 'Aprobado'
+                            ),
+                            '[]'::jsonb
+                        ) AS reglas_aplicabilidad
                     FROM catalogo_documentos_vigentes d
                     WHERE d.procedimiento = %s
                     ORDER BY d.orden_en_procedimiento, d.clave_catalogo
@@ -110,6 +152,83 @@ def cargar_catalogo_vigente(procedimiento: str):
         # interrumpir la operación actual de los expedientes.
         if exc.__class__.__name__ in {"UndefinedTable", "UndefinedColumn"}:
             return []
+        raise
+
+
+def asegurar_snapshot_expediente(expediente_id: str, procedimiento: str) -> None:
+    """Fija una copia del catálogo activo sin modificarla en actualizaciones futuras."""
+    from modulos.catalogo import a_snapshot
+    from psycopg.types.json import Jsonb
+
+    definiciones = cargar_catalogo_vigente(procedimiento)
+    if not definiciones:
+        return
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT catalogo_importacion_id FROM expedientes WHERE id = %s",
+                (expediente_id,),
+            )
+            fila = cur.fetchone()
+            if not fila:
+                raise RuntimeError("No se encontró el expediente activo")
+            importacion_id = fila[0]
+            if not importacion_id:
+                cur.execute(
+                    "SELECT id FROM catalogo_importaciones WHERE estado = 'ACTIVO'",
+                )
+                activa = cur.fetchone()
+                if not activa:
+                    return
+                importacion_id = activa[0]
+                cur.execute(
+                    "UPDATE expedientes SET catalogo_importacion_id = %s WHERE id = %s",
+                    (importacion_id, expediente_id),
+                )
+
+            for documento in definiciones:
+                cur.execute(
+                    """
+                    INSERT INTO expediente_requisitos (
+                        expediente_id, importacion_id, catalogo_documento_origen_id,
+                        clave_catalogo, orden, etapa, tipo_documental,
+                        nombre_documento, obligatoriedad, admite_multiples,
+                        definicion_snapshot
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (expediente_id, clave_catalogo) DO NOTHING
+                    """,
+                    (
+                        expediente_id, importacion_id, documento.id,
+                        documento.clave_catalogo, documento.orden, documento.etapa,
+                        documento.tipo_documental, documento.nombre,
+                        documento.obligatoriedad, documento.admite_multiples,
+                        Jsonb(a_snapshot(documento)),
+                    ),
+                )
+        conn.commit()
+
+
+def cargar_catalogo_expediente(expediente_id: str, procedimiento: str):
+    """Lee la fotografía del expediente; la crea una sola vez si aún no existe."""
+    from modulos.catalogo import desde_snapshot
+
+    try:
+        asegurar_snapshot_expediente(expediente_id, procedimiento)
+        with _conexion() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT definicion_snapshot
+                    FROM expediente_requisitos
+                    WHERE expediente_id = %s
+                    ORDER BY orden, clave_catalogo
+                    """,
+                    (expediente_id,),
+                )
+                return [desde_snapshot(fila[0]) for fila in cur.fetchall()]
+    except Exception as exc:
+        if exc.__class__.__name__ in {"UndefinedTable", "UndefinedColumn"}:
+            return cargar_catalogo_vigente(procedimiento)
         raise
 
 
@@ -175,7 +294,13 @@ def obtener_o_crear_expediente(
                 expediente_id = cur.fetchone()[0]
                 creado = True
         conn.commit()
-    return str(expediente_id), creado
+    expediente_texto = str(expediente_id)
+    try:
+        asegurar_snapshot_expediente(expediente_texto, procedimiento)
+    except Exception as exc:
+        if exc.__class__.__name__ not in {"UndefinedTable", "UndefinedColumn"}:
+            raise
+    return expediente_texto, creado
 
 
 def cargar_expediente(expediente_id: str) -> tuple[dict[str, list], set[str]]:
@@ -224,16 +349,33 @@ def cargar_control_expediente(expediente_id: str) -> tuple[dict[str, str], list[
                     raise
                 cur.execute("ROLLBACK TO SAVEPOINT cargar_aplicabilidad")
 
-            cur.execute(
-                """
-                SELECT nombre_archivo, huella_sha256, estado,
-                       clave_catalogo, tipo_documental
-                FROM documentos
-                WHERE expediente_id = %s
-                ORDER BY creado_en, nombre_archivo
-                """,
-                (expediente_id,),
-            )
+            cur.execute("SAVEPOINT cargar_archivos_expediente")
+            try:
+                cur.execute(
+                    """
+                    SELECT a.nombre_archivo, a.huella_sha256, a.estado,
+                           er.clave_catalogo, er.tipo_documental
+                    FROM archivos_expediente a
+                    LEFT JOIN expediente_requisitos er ON er.id = a.requisito_id
+                    WHERE a.expediente_id = %s AND a.estado <> 'ELIMINADO'
+                    ORDER BY a.creado_en, a.nombre_archivo
+                    """,
+                    (expediente_id,),
+                )
+            except Exception as exc:
+                if exc.__class__.__name__ not in {"UndefinedTable", "UndefinedColumn"}:
+                    raise
+                cur.execute("ROLLBACK TO SAVEPOINT cargar_archivos_expediente")
+                cur.execute(
+                    """
+                    SELECT nombre_archivo, huella_sha256, estado,
+                           clave_catalogo, tipo_documental
+                    FROM documentos
+                    WHERE expediente_id = %s
+                    ORDER BY creado_en, nombre_archivo
+                    """,
+                    (expediente_id,),
+                )
             archivos = [
                 {
                     "nombre": nombre,
@@ -247,6 +389,74 @@ def cargar_control_expediente(expediente_id: str) -> tuple[dict[str, str], list[
                 in cur.fetchall()
             ]
     return datos_aplicabilidad, archivos
+
+
+def cargar_resultados_requisitos(expediente_id: str) -> dict[str, str]:
+    try:
+        with _conexion() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT clave_catalogo, resultado_ia
+                    FROM expediente_requisitos
+                    WHERE expediente_id = %s
+                    """,
+                    (expediente_id,),
+                )
+                return {clave: resultado for clave, resultado in cur.fetchall()}
+    except Exception as exc:
+        if exc.__class__.__name__ in {"UndefinedTable", "UndefinedColumn"}:
+            return {}
+        raise
+
+
+def registrar_archivo_cargado(
+    expediente_id: str,
+    etapa: str,
+    nombre_archivo: str,
+    huella: str,
+    mime_type: str | None,
+    tamano_bytes: int | None,
+    clave_catalogo: str | None,
+    usuario: str,
+) -> str | None:
+    """Registra metadatos al cargar; el PDF permanece fuera de PostgreSQL."""
+    try:
+        with _conexion() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id FROM expediente_requisitos
+                    WHERE expediente_id = %s AND clave_catalogo = %s
+                    """,
+                    (expediente_id, clave_catalogo),
+                )
+                fila = cur.fetchone()
+                requisito_id = fila[0] if fila else None
+                cur.execute(
+                    """
+                    INSERT INTO archivos_expediente (
+                        expediente_id, requisito_id, etapa, nombre_archivo,
+                        huella_sha256, mime_type, tamano_bytes, creado_por
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (expediente_id, huella_sha256, nombre_archivo)
+                    DO UPDATE SET requisito_id = COALESCE(EXCLUDED.requisito_id, archivos_expediente.requisito_id),
+                                  estado = CASE WHEN archivos_expediente.estado = 'ANALIZADO' THEN 'ANALIZADO' ELSE 'CARGADO' END,
+                                  actualizado_en = now()
+                    RETURNING id
+                    """,
+                    (
+                        expediente_id, requisito_id, etapa, nombre_archivo,
+                        huella, mime_type, tamano_bytes, usuario,
+                    ),
+                )
+                archivo_id = cur.fetchone()[0]
+            conn.commit()
+        return str(archivo_id)
+    except Exception as exc:
+        if exc.__class__.__name__ in {"UndefinedTable", "UndefinedColumn"}:
+            return None
+        raise
 
 
 def guardar_datos_aplicabilidad(
@@ -337,6 +547,37 @@ def registrar_inicio(
                     """,
                     parametros_base,
                 )
+            cur.execute("SAVEPOINT vincular_archivo_requisito")
+            try:
+                cur.execute(
+                    """
+                    UPDATE documentos d
+                    SET archivo_expediente_id = a.id
+                    FROM archivos_expediente a
+                    WHERE d.expediente_id = %s
+                      AND d.clave_procesamiento = %s
+                      AND a.expediente_id = d.expediente_id
+                      AND a.huella_sha256 = d.huella_sha256
+                      AND a.nombre_archivo = d.nombre_archivo
+                    """,
+                    (expediente_id, clave_procesamiento),
+                )
+                cur.execute(
+                    """
+                    UPDATE expediente_requisitos er
+                    SET resultado_ia = 'PROCESANDO', actualizado_en = now()
+                    FROM documentos d
+                    WHERE d.expediente_id = %s
+                      AND d.clave_procesamiento = %s
+                      AND er.expediente_id = d.expediente_id
+                      AND er.clave_catalogo = d.clave_catalogo
+                    """,
+                    (expediente_id, clave_procesamiento),
+                )
+            except Exception as exc:
+                if exc.__class__.__name__ not in {"UndefinedTable", "UndefinedColumn"}:
+                    raise
+                cur.execute("ROLLBACK TO SAVEPOINT vincular_archivo_requisito")
         conn.commit()
 
 
@@ -374,6 +615,29 @@ def registrar_resultado(
                 """,
                 (documento_id, Jsonb(datos), Jsonb(metadatos)),
             )
+            resultado_ia = _resultado_ia_global(datos)
+            cur.execute(
+                """
+                UPDATE expediente_requisitos er
+                SET resultado_ia = %s,
+                    ultimo_documento_id = %s,
+                    actualizado_en = now()
+                FROM documentos d
+                WHERE d.id = %s
+                  AND er.expediente_id = d.expediente_id
+                  AND er.clave_catalogo = d.clave_catalogo
+                """,
+                (resultado_ia, documento_id, documento_id),
+            )
+            cur.execute(
+                """
+                UPDATE archivos_expediente a
+                SET estado = 'ANALIZADO', actualizado_en = now()
+                FROM documentos d
+                WHERE d.id = %s AND a.id = d.archivo_expediente_id
+                """,
+                (documento_id,),
+            )
         conn.commit()
 
 
@@ -392,7 +656,55 @@ def registrar_error(
                 """,
                 (mensaje[:4000], expediente_id, clave_procesamiento),
             )
+            cur.execute("SAVEPOINT marcar_error_requisito")
+            try:
+                cur.execute(
+                    """
+                    UPDATE expediente_requisitos er
+                    SET resultado_ia = 'ERROR', actualizado_en = now()
+                    FROM documentos d
+                    WHERE d.expediente_id = %s
+                      AND d.clave_procesamiento = %s
+                      AND er.expediente_id = d.expediente_id
+                      AND er.clave_catalogo = d.clave_catalogo
+                    """,
+                    (expediente_id, clave_procesamiento),
+                )
+                cur.execute(
+                    """
+                    UPDATE archivos_expediente a
+                    SET estado = 'ERROR', actualizado_en = now()
+                    FROM documentos d
+                    WHERE d.expediente_id = %s
+                      AND d.clave_procesamiento = %s
+                      AND a.id = d.archivo_expediente_id
+                    """,
+                    (expediente_id, clave_procesamiento),
+                )
+            except Exception as exc:
+                if exc.__class__.__name__ not in {"UndefinedTable", "UndefinedColumn"}:
+                    raise
+                cur.execute("ROLLBACK TO SAVEPOINT marcar_error_requisito")
         conn.commit()
+
+
+def _resultado_ia_global(datos: list[dict[str, Any]]) -> str:
+    analisis = datos[0] if datos and isinstance(datos[0], dict) else {}
+    procedimientos = analisis.get("procedimientos", [])
+    estados = {
+        str(item.get("resultado"))
+        for item in procedimientos
+        if isinstance(item, dict)
+    }
+    if "NO_CUMPLE" in estados:
+        return "NO_CUMPLE"
+    if "NO_DETERMINABLE" in estados:
+        return "REVISION_REQUERIDA"
+    if analisis.get("identificacion", {}).get("corresponde") == "NO":
+        return "NO_CUMPLE"
+    if estados and estados.issubset({"CUMPLE", "NO_APLICA"}):
+        return "CUMPLE"
+    return "REVISION_REQUERIDA"
 
 
 def serializar_diagnostico() -> str:

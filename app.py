@@ -11,6 +11,8 @@ from modulos import (
     extraccion,
     generador_excel,
     persistencia,
+    permisos,
+    ui_admin_catalogo,
     utilidades_ui,
 )
 
@@ -33,35 +35,6 @@ def _secreto(nombre: str, default: str = "") -> str:
 
 def _huella_sha256(archivo) -> str:
     return hashlib.sha256(archivo.getvalue()).hexdigest()
-
-
-PREGUNTAS_APLICABILIDAD = (
-    (
-        "requiere_convenio_colaboracion",
-        "¿La ejecución requiere convenio de colaboración o coordinación institucional?",
-        "Incluye aportaciones, autorizaciones, administración conjunta o transferencia de recursos.",
-    ),
-    (
-        "requiere_estudio_impacto",
-        "¿La obra requiere estudio, dictamen o evaluación de impacto?",
-        "Puede ser ambiental, urbano, de movilidad, protección civil u otro sectorial.",
-    ),
-    (
-        "requiere_especificaciones",
-        "¿La obra o servicio requiere especificaciones técnicas de construcción?",
-        "Considere especificaciones generales, particulares o técnicas.",
-    ),
-    (
-        "otorga_anticipo",
-        "¿El contrato contempla el otorgamiento de anticipo?",
-        "Esta respuesta controla la factura y la garantía de anticipo.",
-    ),
-    (
-        "excepcion_garantia_cumplimiento",
-        "¿Existe una excepción legal documentada para omitir la garantía de cumplimiento?",
-        "Responda Sí únicamente cuando la excepción esté fundada y documentada.",
-    ),
-)
 
 
 def _archivos_para_conciliar(archivos_subidos) -> list[aplicabilidad.ArchivoExpediente]:
@@ -87,50 +60,28 @@ def _archivos_para_conciliar(archivos_subidos) -> list[aplicabilidad.ArchivoExpe
     return archivos
 
 
-def _formulario_datos_aplicabilidad() -> None:
-    st.markdown("#### Datos para determinar documentos aplicables")
-    st.caption(
-        "Las respuestas se evalúan mediante reglas determinísticas. "
-        "Por determinar nunca se considera automáticamente como incumplimiento."
-    )
-    opciones = {
-        "Por determinar": aplicabilidad.PENDIENTE,
-        "Sí": aplicabilidad.SI,
-        "No": aplicabilidad.NO,
+def _contexto_automatico(archivos) -> dict:
+    tipos_presentes = {
+        archivo.clave_catalogo
+        for archivo in archivos
+        if archivo.clave_catalogo
     }
-    etiquetas = list(opciones)
-    actuales = st.session_state.get("datos_aplicabilidad", {})
-    respuestas = {}
-    with st.form("form_datos_aplicabilidad"):
-        for clave, pregunta, ayuda in PREGUNTAS_APLICABILIDAD:
-            valor_actual = actuales.get(clave, aplicabilidad.PENDIENTE)
-            indice = list(opciones.values()).index(
-                valor_actual if valor_actual in opciones.values() else aplicabilidad.PENDIENTE
-            )
-            etiqueta = st.selectbox(
-                pregunta,
-                etiquetas,
-                index=indice,
-                help=ayuda,
-                key=f"aplicabilidad_{clave}",
-            )
-            respuestas[clave] = opciones[etiqueta]
-        guardar = st.form_submit_button(
-            "Guardar datos y actualizar lista esperada",
-            type="primary",
-        )
-
-    if guardar:
-        if st.session_state.usar_neon:
-            persistencia.guardar_datos_aplicabilidad(
-                st.session_state.expediente_id,
-                respuestas,
-            )
-        st.session_state.datos_aplicabilidad = respuestas
-        st.session_state.mensaje_aplicabilidad = (
-            "Datos guardados. La lista de documentos esperados fue actualizada."
-        )
-        st.rerun()
+    campos: dict[str, dict] = {}
+    for categoria, analisis_listado in st.session_state.get("historial", {}).items():
+        for analisis in analisis_listado:
+            if not isinstance(analisis, dict):
+                continue
+            tipo = analisis.get("catalogo", {}).get("tipo_documental") or categoria
+            for dato in analisis.get("datos_extraidos", []):
+                if dato.get("encontrado"):
+                    campos.setdefault(tipo, {})[dato.get("nombre_tecnico")] = dato.get("valor")
+            if analisis.get("catalogo", {}).get("clave_catalogo"):
+                tipos_presentes.add(tipo)
+    return {
+        "documentos_presentes": tipos_presentes,
+        "campos_extraidos": campos,
+        "resultados_ia": st.session_state.get("resultados_ia", {}),
+    }
 
 
 def _version_prompt(
@@ -169,6 +120,7 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
     st.session_state.usar_neon = False
     datos_aplicabilidad = {}
     archivos_guardados = []
+    resultados_ia = {}
     accion = "local"
     if persistencia.disponible():
         try:
@@ -181,6 +133,7 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
             datos_aplicabilidad, archivos_guardados = (
                 persistencia.cargar_control_expediente(expediente_id)
             )
+            resultados_ia = persistencia.cargar_resultados_requisitos(expediente_id)
             st.session_state.expediente_id = expediente_id
             st.session_state.usar_neon = True
             accion = "creado" if creado else "abierto"
@@ -197,6 +150,7 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
     st.session_state.archivos_procesados = procesados
     st.session_state.datos_aplicabilidad = datos_aplicabilidad
     st.session_state.archivos_guardados = archivos_guardados
+    st.session_state.resultados_ia = resultados_ia
     st.session_state.estado_cargado = llave
     return accion
 
@@ -340,6 +294,8 @@ def _mostrar_resumen(resumen: dict) -> None:
 
 
 def main() -> None:
+    usuario_actual = _secreto("APP_USER_ID", "usuario_local")
+    acceso = permisos.acceso_actual(usuario_actual)
     estructura_expediente = {
         "PPP": {"key_raiz": "up_ppp", "nombre": "1_PPP (Planeación, Prog. y Presup.)"},
         "ADJ": {"key_raiz": "up_adj", "nombre": "2_ADJ (Adjudicación)"},
@@ -364,8 +320,9 @@ def main() -> None:
     documentos_catalogo = []
     if st.session_state.usar_neon:
         try:
-            documentos_catalogo = persistencia.cargar_catalogo_vigente(
-                st.session_state.procedimiento
+            documentos_catalogo = persistencia.cargar_catalogo_expediente(
+                st.session_state.expediente_id,
+                st.session_state.procedimiento,
             )
         except Exception as exc:
             st.warning(f"No fue posible consultar el catálogo maestro: {exc}")
@@ -403,6 +360,21 @@ def main() -> None:
                 if archivos_raiz:
                     archivos_subidos[config_etapa["key_raiz"]] = archivos_raiz
                     for archivo in archivos_raiz:
+                        definicion = catalogo.clasificar_archivo(
+                            archivo.name,
+                            (item for item in documentos_catalogo if item.etapa == etapa),
+                        )
+                        if st.session_state.usar_neon:
+                            persistencia.registrar_archivo_cargado(
+                                st.session_state.expediente_id,
+                                etapa,
+                                archivo.name,
+                                _huella_sha256(archivo),
+                                getattr(archivo, "type", None),
+                                getattr(archivo, "size", None),
+                                definicion.clave_catalogo if definicion else None,
+                                usuario_actual,
+                            )
                         st.caption(f"📄 {archivo.name}")
 
                 for subcategoria, config_sub in config_etapa.get("subcarpetas", {}).items():
@@ -424,9 +396,37 @@ def main() -> None:
 
     conciliacion = aplicabilidad.conciliar_expediente(
         documentos_catalogo,
-        _archivos_para_conciliar(archivos_subidos),
-        st.session_state.get("datos_aplicabilidad", {}),
+        (archivos_control := _archivos_para_conciliar(archivos_subidos)),
+        _contexto_automatico(archivos_control),
     )
+
+    def analizar_desde_validacion(archivo, documento) -> None:
+        if st.session_state.usar_neon:
+            persistencia.registrar_archivo_cargado(
+                st.session_state.expediente_id,
+                documento.etapa,
+                archivo.name,
+                _huella_sha256(archivo),
+                getattr(archivo, "type", None),
+                getattr(archivo, "size", None),
+                documento.clave_catalogo,
+                usuario_actual,
+            )
+        resumen = procesar_lote_documentos(
+            [archivo],
+            documento.tipo_documental,
+            lambda item: extraccion.procesar_con_catalogo(item, documento),
+            documento,
+        )
+        _mostrar_resumen(resumen)
+        if resumen["exitos"]:
+            _cargar_expediente_activo(forzar=True)
+            st.session_state.destino_pagina = documento.etapa
+            st.rerun()
+
+    def ver_analisis_desde_validacion(documento) -> None:
+        st.session_state.destino_pagina = documento.etapa
+        st.rerun()
     with st.sidebar:
         st.markdown("---")
         st.markdown("#### Control de integración")
@@ -438,11 +438,17 @@ def main() -> None:
         )
 
     opciones_nav = ["🏠 Inicio", "PPP", "ADJ", "CNT", "EJE", "ETR"]
+    if acceso.administra_catalogo:
+        opciones_nav.append("⚙️ Catálogo")
+    destino = st.session_state.pop("destino_pagina", None)
+    if destino in opciones_nav:
+        st.session_state["pagina_actual"] = destino
     pagina_actual = st.radio(
         "Navegación",
         options=opciones_nav,
         horizontal=True,
         label_visibility="collapsed",
+        key="pagina_actual",
     )
     st.markdown("---")
 
@@ -499,15 +505,20 @@ def main() -> None:
             "Suba los documentos desde el panel lateral. Los resultados se guardan "
             "por expediente y se vuelven a procesar cuando cambia el modelo o el prompt."
         )
-        mensaje_aplicabilidad = st.session_state.pop(
-            "mensaje_aplicabilidad",
-            None,
+        st.markdown("### Validación del expediente")
+        st.caption(
+            "La lista y su aplicabilidad se calculan automáticamente con la versión "
+            "del catálogo asignada al expediente."
         )
-        if mensaje_aplicabilidad:
-            st.success(mensaje_aplicabilidad)
-        _formulario_datos_aplicabilidad()
-        st.markdown("### Lista automática y conciliación documental")
-        utilidades_ui.renderizar_conciliacion_expediente(conciliacion)
+        utilidades_ui.renderizar_conciliacion_expediente(
+            conciliacion,
+            al_analizar=analizar_desde_validacion,
+            al_ver_analisis=ver_analisis_desde_validacion,
+        )
+        return
+
+    if pagina_actual == "⚙️ Catálogo":
+        ui_admin_catalogo.renderizar(usuario_actual, acceso.publica_catalogo)
         return
 
     if pagina_actual == "EJE":
@@ -573,6 +584,8 @@ def main() -> None:
     utilidades_ui.renderizar_conciliacion_expediente(
         conciliacion,
         pagina_actual,
+        al_analizar=analizar_desde_validacion,
+        al_ver_analisis=ver_analisis_desde_validacion,
     )
     archivos_etapa = archivos_subidos.get(
         estructura_expediente[pagina_actual]["key_raiz"], []
