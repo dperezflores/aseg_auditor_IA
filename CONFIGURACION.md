@@ -10,6 +10,8 @@ credenciales reales al repositorio.
 - `DATABASE_URL`: conexión agrupada del proyecto Neon `aseg-auditor-ia`.
 - `DATABASE_URL_ADMIN`: conexión directa opcional para migraciones e importaciones.
 - `APP_USER_ID`: identificador estable del usuario mientras se incorpora autenticación.
+- `APP_ADMIN_IDS`: lista separada por comas de los usuarios que tendrán el rol de
+  administrador general durante la etapa inicial.
 
 La aplicación continúa funcionando con una caché local cuando `DATABASE_URL` no
 está disponible, pero ese modo es temporal y no garantiza permanencia.
@@ -70,10 +72,12 @@ analizarse aunque el PDF y el modelo sean los mismos.
 ### Aplicabilidad y control de integración
 
 La lista esperada se genera exclusivamente con las definiciones vigentes y
-aprobadas del procedimiento activo. Los documentos obligatorios siempre se
-consideran aplicables. Los condicionales se evalúan con respuestas estructuradas
-guardadas en el expediente; si falta una respuesta o una regla determinística,
-el documento permanece `PENDIENTE` y no se convierte en faltante.
+aprobadas de la versión asignada al expediente. Esa fotografía no cambia cuando
+se publica una versión posterior. Los documentos obligatorios siempre se
+consideran aplicables. Los condicionales se evalúan mediante reglas aprobadas que
+usan documentos presentes o datos extraídos; el usuario operativo no responde
+cuestionarios de aplicabilidad. Si falta evidencia, el documento permanece
+`PENDIENTE` y no se convierte en faltante.
 
 La conciliación compara la lista esperada con los archivos cargados y con los
 documentos ya registrados en Neon. Distingue encontrados, faltantes, no
@@ -83,6 +87,10 @@ automáticamente para declarar que un documento no aplica.
 
 La ampliación correspondiente se documenta en
 `sql/003_aplicabilidad_expedientes.sql`.
+
+Los roles, borradores, reglas ejecutables, auditoría, fotografías del catálogo y
+el registro separado de archivos se documentan en
+`sql/004_administracion_catalogo.sql`.
 
 Use preferentemente la conexión directa para ejecutar migraciones o importar el
 catálogo. Mantenga la conexión agrupada en `DATABASE_URL` para el uso normal de
