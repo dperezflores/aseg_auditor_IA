@@ -160,6 +160,15 @@ def asegurar_snapshot_expediente(expediente_id: str, procedimiento: str) -> None
     from modulos.catalogo import a_snapshot
     from psycopg.types.json import Jsonb
 
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) FROM expediente_requisitos WHERE expediente_id = %s",
+                (expediente_id,),
+            )
+            if cur.fetchone()[0] > 0:
+                return
+
     definiciones = cargar_catalogo_vigente(procedimiento)
     if not definiciones:
         return
@@ -358,9 +367,22 @@ def cargar_control_expediente(expediente_id: str) -> tuple[dict[str, str], list[
                     FROM archivos_expediente a
                     LEFT JOIN expediente_requisitos er ON er.id = a.requisito_id
                     WHERE a.expediente_id = %s AND a.estado <> 'ELIMINADO'
-                    ORDER BY a.creado_en, a.nombre_archivo
+                    UNION ALL
+                    SELECT d.nombre_archivo, d.huella_sha256, d.estado,
+                           d.clave_catalogo, d.tipo_documental
+                    FROM documentos d
+                    WHERE d.expediente_id = %s
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM archivos_expediente a
+                          WHERE a.expediente_id = d.expediente_id
+                            AND a.huella_sha256 = d.huella_sha256
+                            AND a.nombre_archivo = d.nombre_archivo
+                            AND a.estado <> 'ELIMINADO'
+                      )
+                    ORDER BY 1
                     """,
-                    (expediente_id,),
+                    (expediente_id, expediente_id),
                 )
             except Exception as exc:
                 if exc.__class__.__name__ not in {"UndefinedTable", "UndefinedColumn"}:
