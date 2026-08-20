@@ -192,7 +192,7 @@ def consultar_diccionario(nombre_archivo, procedimiento, ruta_excel="configuraci
         st.error(f"❌ Error al intentar leer la hoja '{hoja}' del Excel: {e}")
         return None
     
-def renderizar_reporte_contrato(datos_completos):
+def renderizar_reporte_contrato(datos_completos, al_eliminar=None):
     """Renderiza el diseño exacto de Colab para los contratos dentro de Streamlit."""
     import pandas as pd
     
@@ -272,10 +272,19 @@ def renderizar_reporte_contrato(datos_completos):
     st.markdown(estilo_conclusion.to_html(), unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(estilo_proc.to_html(), unsafe_allow_html=True)
+    documento_id = datos_completos.get("_documento_id")
+    if al_eliminar and documento_id:
+        with st.expander("Eliminar este análisis"):
+            confirmar = st.checkbox(
+                "Confirmo que deseo eliminar este análisis",
+                key=f"confirmar_eliminar_legacy_{documento_id}",
+            )
+            if st.button("Eliminar análisis", key=f"eliminar_legacy_{documento_id}", disabled=not confirmar):
+                al_eliminar(documento_id)
     st.markdown("<hr style='margin-top: 40px; margin-bottom: 40px;'>", unsafe_allow_html=True)
 
 
-def renderizar_reporte_catalogo(analisis):
+def renderizar_reporte_catalogo(analisis, al_eliminar=None):
     """Muestra una salida auditable y ordenada para cualquier tipo documental."""
     definicion = analisis.get("catalogo", {})
     identificacion = analisis.get("identificacion", {})
@@ -340,11 +349,14 @@ def renderizar_reporte_catalogo(analisis):
                 for dato in datos
             ]
         ).sort_values("Orden")
-        st.dataframe(
-            df_datos.drop(columns=["Orden"]),
-            hide_index=True,
-            use_container_width=True,
-        )
+        tabla_datos = df_datos[["Campo", "Valor", "Evidencia", "Página(s)", "Confianza"]]
+        estilo = tabla_datos.style.set_properties(**{
+            "text-align": "left", "border": "1px solid #D6D6D6", "padding": "10px", "font-family": "Arial"
+        }).set_table_styles([
+            {"selector": "th", "props": [("background-color", "#00304F"), ("color", "white"), ("text-align", "center"), ("border-bottom", "4px solid #FF5E12")]},
+            {"selector": "td.col0", "props": [("font-weight", "bold"), ("background-color", "#F8F9FA"), ("width", "280px")]},
+        ]).hide(axis="index")
+        st.markdown(estilo.to_html(), unsafe_allow_html=True)
 
     procedimientos = analisis.get("procedimientos", [])
     if procedimientos:
@@ -368,14 +380,25 @@ def renderizar_reporte_catalogo(analisis):
                 for procedimiento in procedimientos
             ]
         ).sort_values("Orden")
-        st.dataframe(
-            df_procedimientos.drop(columns=["Orden"]),
-            hide_index=True,
-            use_container_width=True,
-        )
+        tabla_proc = df_procedimientos.drop(columns=["Orden"])
+        estilo_proc = tabla_proc.style.set_properties(**{
+            "text-align": "left", "border": "1px solid #D6D6D6", "padding": "10px", "font-family": "Arial"
+        }).set_table_styles([
+            {"selector": "th", "props": [("background-color", "#00304F"), ("color", "white"), ("text-align", "center"), ("border-bottom", "4px solid #FF5E12")]},
+            {"selector": "td.col0", "props": [("font-weight", "bold"), ("width", "360px")]},
+        ]).hide(axis="index")
+        st.markdown(estilo_proc.to_html(), unsafe_allow_html=True)
 
-    st.markdown("#### Conclusión preliminar de IA")
-    st.info(analisis.get("conclusion", "Sin conclusión disponible."))
+    conclusion = html.escape(str(analisis.get("conclusion", "Sin conclusión disponible.")))
+    st.markdown(
+        f"""
+        <table style="width:100%;border-collapse:collapse;margin-top:24px;font-family:Arial;">
+          <thead><tr><th style="background:#00304F;color:white;padding:10px;border-bottom:4px solid #FF5E12;">CONCLUSIÓN DEL ANÁLISIS (IA)</th></tr></thead>
+          <tbody><tr><td style="padding:18px;border:1px solid #D6D6D6;background:#FFF5F2;line-height:1.6;">{conclusion}</td></tr></tbody>
+        </table>
+        """,
+        unsafe_allow_html=True,
+    )
 
     fundamento = definicion.get("fundamento_normativo")
     if fundamento:
@@ -383,6 +406,15 @@ def renderizar_reporte_catalogo(analisis):
 
     for advertencia in analisis.get("advertencias", []):
         st.warning(str(advertencia))
+
+    documento_id = analisis.get("_documento_id")
+    if al_eliminar and documento_id:
+        clave_confirmacion = f"confirmar_eliminar_{documento_id}"
+        with st.expander("Eliminar este análisis"):
+            st.warning("El análisis dejará de mostrarse, pero se conservará una baja auditable en la base de datos.")
+            confirmar = st.checkbox("Confirmo que deseo eliminar este análisis", key=clave_confirmacion)
+            if st.button("Eliminar análisis", key=f"eliminar_{documento_id}", disabled=not confirmar):
+                al_eliminar(documento_id)
 
     st.markdown("<hr style='margin:35px 0;'>", unsafe_allow_html=True)
 
@@ -392,6 +424,8 @@ def renderizar_conciliacion_expediente(
     etapa=None,
     al_analizar=None,
     al_ver_analisis=None,
+    documentos_catalogo=None,
+    archivos_existentes=None,
 ):
     """Muestra el control documental sin convertir pendientes en faltantes."""
     resultados = [
@@ -504,6 +538,29 @@ def renderizar_conciliacion_expediente(
         )
         columnas_accion = st.columns(4)
         archivo_analisis = archivo_nuevo
+        confirmar_inconsistencia = True
+        if archivo_nuevo is not None:
+            huella = hashlib.sha256(archivo_nuevo.getvalue()).hexdigest()
+            duplicado = any(
+                item.get("huella") == huella or item.get("nombre") == archivo_nuevo.name
+                for item in (archivos_existentes or [])
+            )
+            if duplicado:
+                st.info("Este documento ya está cargado en el expediente. Puede analizarlo sin volver a registrarlo.")
+            if documentos_catalogo:
+                from modulos import catalogo as catalogo_maestro
+
+                detectado = catalogo_maestro.clasificar_archivo(archivo_nuevo.name, documentos_catalogo)
+                if not detectado or detectado.clave_catalogo != documento.clave_catalogo:
+                    nombre_detectado = detectado.nombre if detectado else "ningún código conocido"
+                    st.warning(
+                        f"El nombre del archivo no coincide con {documento.clave_catalogo} · {documento.nombre}. "
+                        f"El sistema reconoce: {nombre_detectado}."
+                    )
+                    confirmar_inconsistencia = st.checkbox(
+                        "Estoy seguro de que deseo analizarlo de todas formas",
+                        key=f"confirmar_codigo_{documento.id}_{huella[:10]}",
+                    )
         if al_analizar:
             etiqueta = (
                 "Volver a analizar con IA"
@@ -513,7 +570,7 @@ def renderizar_conciliacion_expediente(
             if columnas_accion[0].button(
                 etiqueta,
                 key=f"analizar_{documento.id}",
-                disabled=archivo_analisis is None,
+                disabled=archivo_analisis is None or not confirmar_inconsistencia,
             ):
                 al_analizar(archivo_analisis, documento)
         if al_ver_analisis and columnas_accion[1].button(
