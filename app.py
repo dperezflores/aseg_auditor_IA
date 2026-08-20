@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 
 import streamlit as st
@@ -34,7 +35,28 @@ def _secreto(nombre: str, default: str = "") -> str:
 
 
 def _huella_sha256(archivo) -> str:
-    return hashlib.sha256(archivo.getvalue()).hexdigest()
+    cache = st.session_state.setdefault("huellas_archivos", {})
+    identidad = (
+        str(getattr(archivo, "file_id", "")),
+        str(getattr(archivo, "name", "")),
+        int(getattr(archivo, "size", 0) or 0),
+    )
+    if identidad not in cache:
+        cache[identidad] = hashlib.sha256(archivo.getvalue()).hexdigest()
+    return cache[identidad]
+
+
+@st.cache_data(show_spinner=False)
+def _generar_reporte_ejecucion(categoria: str, datos_json: str):
+    datos = json.loads(datos_json)
+    if categoria == "Pólizas":
+        return generador_excel.reporte_polizas(datos)
+    funcion = {
+        "Estimaciones": generador_excel.reporte_estimaciones,
+        "Facturas": generador_excel.reporte_facturas,
+        "Comprobantes de Pago": generador_excel.reporte_comprobantes,
+    }[categoria]
+    return funcion(datos)
 
 
 def _archivos_para_conciliar(archivos_subidos) -> list[aplicabilidad.ArchivoExpediente]:
@@ -58,6 +80,14 @@ def _archivos_para_conciliar(archivos_subidos) -> list[aplicabilidad.ArchivoExpe
                 )
             )
     return archivos
+
+
+def _registros_archivos_actuales(archivos_subidos) -> list[dict]:
+    registros = list(st.session_state.get("archivos_guardados", []))
+    for grupo in archivos_subidos.values():
+        for archivo in grupo:
+            registros.append({"nombre": archivo.name, "huella": _huella_sha256(archivo)})
+    return registros
 
 
 def _contexto_automatico(archivos) -> dict:
@@ -108,15 +138,11 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
     st.session_state.setdefault("procedimiento", "LPU (Licitación Pública)")
     st.session_state.setdefault("expediente_nombre", "Expediente principal")
     usuario = _secreto("APP_USER_ID", "usuario_local")
-    llave = (
-        usuario,
-        st.session_state.expediente_nombre,
-        st.session_state.procedimiento[:3],
-    )
+    expediente_seleccionado = st.session_state.get("expediente_id")
+    llave = (usuario, expediente_seleccionado, st.session_state.expediente_nombre)
     if not forzar and st.session_state.get("estado_cargado") == llave:
         return None
 
-    st.session_state.expediente_id = None
     st.session_state.usar_neon = False
     datos_aplicabilidad = {}
     archivos_guardados = []
@@ -124,11 +150,21 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
     accion = "local"
     if persistencia.disponible():
         try:
-            expediente_id, creado = persistencia.obtener_o_crear_expediente(
-                st.session_state.expediente_nombre,
-                st.session_state.procedimiento,
-                usuario,
-            )
+            if expediente_seleccionado:
+                info = persistencia.abrir_expediente(expediente_seleccionado, usuario)
+                expediente_id, creado = info["id"], False
+                st.session_state.expediente_nombre = info["nombre"]
+                st.session_state.procedimiento = {
+                    "DIR": "DIR (Adjudicación Directa)",
+                    "LPU": "LPU (Licitación Pública)",
+                    "LSI": "LSI (Licitación Simplificada)",
+                }.get(info["procedimiento"], info["procedimiento"])
+            else:
+                expediente_id, creado = persistencia.obtener_o_crear_expediente(
+                    st.session_state.expediente_nombre,
+                    st.session_state.procedimiento,
+                    usuario,
+                )
             historial, procesados = persistencia.cargar_expediente(expediente_id)
             datos_aplicabilidad, archivos_guardados = (
                 persistencia.cargar_control_expediente(expediente_id)
@@ -136,6 +172,9 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
             resultados_ia = persistencia.cargar_resultados_requisitos(expediente_id)
             st.session_state.expediente_id = expediente_id
             st.session_state.usar_neon = True
+            st.session_state.documentos_catalogo = persistencia.cargar_catalogo_expediente(
+                expediente_id, st.session_state.procedimiento
+            )
             accion = "creado" if creado else "abierto"
         except Exception as exc:
             st.warning(
@@ -151,11 +190,10 @@ def _cargar_expediente_activo(forzar: bool = False) -> str | None:
     st.session_state.datos_aplicabilidad = datos_aplicabilidad
     st.session_state.archivos_guardados = archivos_guardados
     st.session_state.resultados_ia = resultados_ia
-    st.session_state.estado_cargado = llave
+    st.session_state.estado_cargado = (
+        usuario, st.session_state.get("expediente_id"), st.session_state.expediente_nombre
+    )
     return accion
-
-
-_cargar_expediente_activo()
 
 
 def _guardar_inicio(
@@ -295,7 +333,20 @@ def _mostrar_resumen(resumen: dict) -> None:
 
 def main() -> None:
     usuario_actual = _secreto("APP_USER_ID", "usuario_local")
-    acceso = permisos.acceso_actual(usuario_actual)
+    st.session_state.setdefault("procedimiento", "LPU (Licitación Pública)")
+    st.session_state.setdefault("expediente_nombre", "")
+    st.session_state.setdefault("expediente_id", None)
+    st.session_state.setdefault("usar_neon", False)
+    st.session_state.setdefault("documentos_catalogo", [])
+    st.session_state.setdefault("historial", {k: [] for k in persistencia.HISTORIAL_BASE})
+    st.session_state.setdefault("archivos_procesados", set())
+    st.session_state.setdefault("archivos_guardados", [])
+    st.session_state.setdefault("datos_aplicabilidad", {})
+    st.session_state.setdefault("resultados_ia", {})
+    if st.session_state.get("acceso_usuario_id") != usuario_actual:
+        st.session_state.acceso_usuario = permisos.acceso_actual(usuario_actual)
+        st.session_state.acceso_usuario_id = usuario_actual
+    acceso = st.session_state.acceso_usuario
     estructura_expediente = {
         "PPP": {"key_raiz": "up_ppp", "nombre": "1_PPP (Planeación, Prog. y Presup.)"},
         "ADJ": {"key_raiz": "up_adj", "nombre": "2_ADJ (Adjudicación)"},
@@ -317,15 +368,61 @@ def main() -> None:
         "CNT_CNT": extraccion.procesar_contratos,
     }
     archivos_subidos = {}
-    documentos_catalogo = []
-    if st.session_state.usar_neon:
-        try:
-            documentos_catalogo = persistencia.cargar_catalogo_expediente(
-                st.session_state.expediente_id,
-                st.session_state.procedimiento,
-            )
-        except Exception as exc:
-            st.warning(f"No fue posible consultar el catálogo maestro: {exc}")
+    documentos_catalogo = st.session_state.get("documentos_catalogo", [])
+
+    if not st.session_state.expediente_id:
+        st.markdown("### Expedientes")
+        st.caption("Abra un expediente existente o cree uno nuevo. El procedimiento queda guardado con el expediente.")
+        if persistencia.disponible():
+            try:
+                expedientes = persistencia.listar_expedientes(usuario_actual)
+            except Exception as exc:
+                st.error(f"No fue posible consultar los expedientes: {exc}")
+                expedientes = []
+            if expedientes:
+                etiquetas = {
+                    e["id"]: f'{e["nombre"]} · {e["procedimiento"]} · actualizado {e["actualizado_en"]:%d/%m/%Y %H:%M}'
+                    for e in expedientes
+                }
+                with st.form("abrir_expediente_existente"):
+                    elegido = st.selectbox("Expediente existente", list(etiquetas), format_func=etiquetas.get)
+                    abrir_existente = st.form_submit_button("Abrir expediente", type="primary")
+                if abrir_existente:
+                    st.session_state.expediente_id = elegido
+                    _cargar_expediente_activo(forzar=True)
+                    st.session_state.mensaje_expediente = ("success", "Expediente abierto correctamente.")
+                    st.rerun()
+            else:
+                st.info("Todavía no hay expedientes guardados para esta cuenta.")
+            with st.expander("➕ Crear expediente"):
+                with st.form("crear_expediente_nuevo"):
+                    nombre_nuevo = st.text_input("Nombre del expediente")
+                    procedimiento_nuevo = st.selectbox("Tipo de procedimiento", [
+                        "DIR (Adjudicación Directa)", "LPU (Licitación Pública)", "LSI (Licitación Simplificada)"
+                    ])
+                    crear_nuevo = st.form_submit_button("Crear y abrir expediente", type="primary")
+                if crear_nuevo:
+                    if not nombre_nuevo.strip():
+                        st.error("Indique el nombre del expediente.")
+                    else:
+                        st.session_state.expediente_nombre = nombre_nuevo.strip()
+                        st.session_state.procedimiento = procedimiento_nuevo
+                        st.session_state.expediente_id = None
+                        accion = _cargar_expediente_activo(forzar=True)
+                        st.session_state.mensaje_expediente = (
+                            "success" if accion == "creado" else "info",
+                            "Expediente creado y abierto correctamente." if accion == "creado" else "Ese nombre ya existía; se abrió el expediente guardado.",
+                        )
+                        st.rerun()
+        else:
+            st.warning("Configure DATABASE_URL para listar y recordar expedientes.")
+        if acceso.administra_catalogo:
+            st.markdown("---")
+            if st.button("⚙️ Abrir administración del catálogo"):
+                st.session_state.mostrar_catalogo_sin_expediente = True
+            if st.session_state.get("mostrar_catalogo_sin_expediente"):
+                ui_admin_catalogo.renderizar(usuario_actual, acceso.publica_catalogo)
+        return
 
     with st.sidebar:
         st.header("📂 Expediente Unitario")
@@ -360,21 +457,6 @@ def main() -> None:
                 if archivos_raiz:
                     archivos_subidos[config_etapa["key_raiz"]] = archivos_raiz
                     for archivo in archivos_raiz:
-                        definicion = catalogo.clasificar_archivo(
-                            archivo.name,
-                            (item for item in documentos_catalogo if item.etapa == etapa),
-                        )
-                        if st.session_state.usar_neon:
-                            persistencia.registrar_archivo_cargado(
-                                st.session_state.expediente_id,
-                                etapa,
-                                archivo.name,
-                                _huella_sha256(archivo),
-                                getattr(archivo, "type", None),
-                                getattr(archivo, "size", None),
-                                definicion.clave_catalogo if definicion else None,
-                                usuario_actual,
-                            )
                         st.caption(f"📄 {archivo.name}")
 
                 for subcategoria, config_sub in config_etapa.get("subcarpetas", {}).items():
@@ -401,12 +483,17 @@ def main() -> None:
     )
 
     def analizar_desde_validacion(archivo, documento) -> None:
-        if st.session_state.usar_neon:
+        huella = _huella_sha256(archivo)
+        ya_registrado = any(
+            item.get("huella") == huella or item.get("nombre") == archivo.name
+            for item in st.session_state.get("archivos_guardados", [])
+        )
+        if st.session_state.usar_neon and not ya_registrado:
             persistencia.registrar_archivo_cargado(
                 st.session_state.expediente_id,
                 documento.etapa,
                 archivo.name,
-                _huella_sha256(archivo),
+                huella,
                 getattr(archivo, "type", None),
                 getattr(archivo, "size", None),
                 documento.clave_catalogo,
@@ -426,6 +513,23 @@ def main() -> None:
 
     def ver_analisis_desde_validacion(documento) -> None:
         st.session_state.destino_pagina = documento.etapa
+        st.rerun()
+
+    def eliminar_analisis(documento_id: str) -> None:
+        persistencia.eliminar_analisis(
+            st.session_state.expediente_id, documento_id, usuario_actual
+        )
+        st.session_state.archivos_procesados = {
+            clave for clave in st.session_state.archivos_procesados
+            if not any(
+                analisis.get("_documento_id") == documento_id
+                and analisis.get("_clave_procesamiento") == clave
+                for lista in st.session_state.historial.values()
+                for analisis in lista if isinstance(analisis, dict)
+            )
+        }
+        _cargar_expediente_activo(forzar=True)
+        st.session_state.mensaje_analisis = "Análisis eliminado de la vista y registrado en la bitácora."
         st.rerun()
     with st.sidebar:
         st.markdown("---")
@@ -453,7 +557,7 @@ def main() -> None:
     st.markdown("---")
 
     if pagina_actual == "🏠 Inicio":
-        st.markdown("### Configuración del expediente")
+        st.markdown("### Expediente activo")
         mensaje_expediente = st.session_state.pop("mensaje_expediente", None)
         if mensaje_expediente:
             nivel, mensaje = mensaje_expediente
@@ -464,42 +568,13 @@ def main() -> None:
             else:
                 st.warning(mensaje)
 
-        with st.form("form_expediente"):
-            nombre = st.text_input(
-                "Nombre del expediente",
-                value=st.session_state.expediente_nombre,
-            )
-            opciones = [
-                "DIR (Adjudicación Directa)",
-                "LPU (Licitación Pública)",
-                "LSI (Licitación Simplificada)",
-            ]
-            procedimiento = st.selectbox(
-                "Tipo de procedimiento",
-                opciones,
-                index=["DIR", "LPU", "LSI"].index(st.session_state.procedimiento[:3]),
-            )
-            abrir = st.form_submit_button("Abrir o crear expediente", type="primary")
-        if abrir:
-            st.session_state.expediente_nombre = nombre.strip() or "Expediente principal"
-            st.session_state.procedimiento = procedimiento
-            accion = _cargar_expediente_activo(forzar=True)
-            nombre_activo = st.session_state.expediente_nombre
-            if accion == "creado":
-                st.session_state.mensaje_expediente = (
-                    "success",
-                    f'Expediente "{nombre_activo}" creado y abierto correctamente.',
-                )
-            elif accion == "abierto":
-                st.session_state.mensaje_expediente = (
-                    "info",
-                    f'El expediente "{nombre_activo}" ya existía; se abrió su información guardada.',
-                )
-            else:
-                st.session_state.mensaje_expediente = (
-                    "warning",
-                    f'Expediente "{nombre_activo}" abierto en modo local temporal.',
-                )
+        c1, c2, c3 = st.columns([3, 2, 1])
+        c1.text_input("Nombre", value=st.session_state.expediente_nombre, disabled=True)
+        c2.text_input("Procedimiento", value=st.session_state.procedimiento, disabled=True)
+        if c3.button("Cambiar expediente", use_container_width=True):
+            st.session_state.expediente_id = None
+            st.session_state.estado_cargado = None
+            st.session_state.documentos_catalogo = []
             st.rerun()
         st.info(
             "Suba los documentos desde el panel lateral. Los resultados se guardan "
@@ -514,6 +589,8 @@ def main() -> None:
             conciliacion,
             al_analizar=analizar_desde_validacion,
             al_ver_analisis=ver_analisis_desde_validacion,
+            documentos_catalogo=documentos_catalogo,
+            archivos_existentes=_registros_archivos_actuales(archivos_subidos),
         )
         return
 
@@ -539,6 +616,20 @@ def main() -> None:
                 for nombre in seleccionados:
                     archivo, categoria = disponibles[nombre]
                     funcion = estructura_expediente["EJE"]["subcarpetas"][categoria]["func"]
+                    huella = _huella_sha256(archivo)
+                    ya_registrado = any(
+                        item.get("huella") == huella or item.get("nombre") == archivo.name
+                        for item in st.session_state.get("archivos_guardados", [])
+                    )
+                    if st.session_state.usar_neon and not ya_registrado:
+                        definicion = catalogo.clasificar_archivo(
+                            archivo.name, (d for d in documentos_catalogo if d.etapa == "EJE")
+                        )
+                        persistencia.registrar_archivo_cargado(
+                            st.session_state.expediente_id, "EJE", archivo.name, huella,
+                            getattr(archivo, "type", None), getattr(archivo, "size", None),
+                            definicion.clave_catalogo if definicion else None, usuario_actual,
+                        )
                     parcial = procesar_lote_documentos([archivo], categoria, funcion)
                     for clave in acumulado:
                         acumulado[clave] += parcial[clave]
@@ -552,15 +643,14 @@ def main() -> None:
             if not datos:
                 continue
             if categoria == "Pólizas":
-                df_dev, df_pag, xls = generador_excel.reporte_polizas(datos)
+                df_dev, df_pag, xls = _generar_reporte_ejecucion(
+                    categoria, json.dumps(datos, ensure_ascii=False, sort_keys=True, default=str)
+                )
                 resultados[categoria] = {"df_dev": df_dev, "df_pag": df_pag, "xls": xls}
             else:
-                funcion = {
-                    "Estimaciones": generador_excel.reporte_estimaciones,
-                    "Facturas": generador_excel.reporte_facturas,
-                    "Comprobantes de Pago": generador_excel.reporte_comprobantes,
-                }[categoria]
-                df, xls = funcion(datos)
+                df, xls = _generar_reporte_ejecucion(
+                    categoria, json.dumps(datos, ensure_ascii=False, sort_keys=True, default=str)
+                )
                 resultados[categoria] = {"df": df, "xls": xls}
 
         if resultados:
@@ -586,6 +676,8 @@ def main() -> None:
         pagina_actual,
         al_analizar=analizar_desde_validacion,
         al_ver_analisis=ver_analisis_desde_validacion,
+        documentos_catalogo=documentos_catalogo,
+        archivos_existentes=_registros_archivos_actuales(archivos_subidos),
     )
     archivos_etapa = archivos_subidos.get(
         estructura_expediente[pagina_actual]["key_raiz"], []
@@ -649,8 +741,22 @@ def main() -> None:
                     )
                     continue
                 categoria, funcion = coincidencia
+                archivo_actual = por_nombre[nombre]
+                huella_actual = _huella_sha256(archivo_actual)
+                ya_registrado = any(
+                    item.get("huella") == huella_actual or item.get("nombre") == archivo_actual.name
+                    for item in st.session_state.get("archivos_guardados", [])
+                )
+                if st.session_state.usar_neon and not ya_registrado:
+                    persistencia.registrar_archivo_cargado(
+                        st.session_state.expediente_id, pagina_actual, archivo_actual.name,
+                        huella_actual, getattr(archivo_actual, "type", None),
+                        getattr(archivo_actual, "size", None),
+                        documento_catalogo.clave_catalogo if documento_catalogo else None,
+                        usuario_actual,
+                    )
                 parcial = procesar_lote_documentos(
-                    [por_nombre[nombre]],
+                    [archivo_actual],
                     categoria,
                     funcion,
                     documento_catalogo,
@@ -670,6 +776,13 @@ def main() -> None:
         st.warning(f"No hay documentos cargados en la carpeta de {pagina_actual}.")
 
     conceptos = []
+    archivos_catalogados = {
+        str(doc.get("Archivo Origen", ""))
+        for concepto, datos in st.session_state.historial.items()
+        if concepto not in {"CONTRATO", "Estimaciones", "Facturas", "Comprobantes de Pago", "Pólizas"}
+        for doc in datos
+        if isinstance(doc, dict) and "datos_extraidos" in doc
+    }
     for concepto, datos in st.session_state.historial.items():
         if concepto in ["Estimaciones", "Facturas", "Comprobantes de Pago", "Pólizas"]:
             continue
@@ -682,6 +795,8 @@ def main() -> None:
                 if pagina_actual in str(doc.get("Archivo Origen", "")).upper()
             ]
         )
+        if concepto == "CONTRATO":
+            docs = [doc for doc in docs if str(doc.get("Archivo Origen", "")) not in archivos_catalogados]
         if docs:
             conceptos.append((concepto, docs))
 
@@ -691,9 +806,9 @@ def main() -> None:
             with tab:
                 for documento in documentos:
                     if "datos_extraidos" in documento:
-                        utilidades_ui.renderizar_reporte_catalogo(documento)
+                        utilidades_ui.renderizar_reporte_catalogo(documento, eliminar_analisis)
                     elif concepto in {"CONTRATO", "CNT_CNT"}:
-                        utilidades_ui.renderizar_reporte_contrato(documento)
+                        utilidades_ui.renderizar_reporte_contrato(documento, eliminar_analisis)
 
 
 if __name__ == "__main__":

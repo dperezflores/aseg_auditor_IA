@@ -283,14 +283,6 @@ def obtener_o_crear_expediente(
             if expediente_existente:
                 expediente_id = expediente_existente[0]
                 creado = False
-                cur.execute(
-                    """
-                    UPDATE expedientes
-                    SET procedimiento = %s, actualizado_en = now()
-                    WHERE id = %s
-                    """,
-                    (procedimiento[:3], expediente_id),
-                )
             else:
                 cur.execute(
                     """
@@ -312,6 +304,47 @@ def obtener_o_crear_expediente(
     return expediente_texto, creado
 
 
+def listar_expedientes(usuario_externo: str) -> list[dict[str, Any]]:
+    """Lista los expedientes del usuario sin abrirlos ni modificar su modalidad."""
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT e.id, e.nombre, e.procedimiento, e.actualizado_en
+                FROM expedientes e
+                JOIN usuarios u ON u.id = e.usuario_id
+                WHERE u.external_id = %s
+                ORDER BY e.actualizado_en DESC, e.nombre
+                """,
+                (usuario_externo,),
+            )
+            return [
+                {"id": str(f[0]), "nombre": f[1], "procedimiento": f[2], "actualizado_en": f[3]}
+                for f in cur.fetchall()
+            ]
+
+
+def abrir_expediente(expediente_id: str, usuario_externo: str) -> dict[str, Any]:
+    """Abre por identificador y verifica que pertenezca al usuario actual."""
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT e.id, e.nombre, e.procedimiento
+                FROM expedientes e
+                JOIN usuarios u ON u.id = e.usuario_id
+                WHERE e.id = %s AND u.external_id = %s
+                """,
+                (expediente_id, usuario_externo),
+            )
+            fila = cur.fetchone()
+            if not fila:
+                raise RuntimeError("No se encontró el expediente o no pertenece al usuario actual")
+            cur.execute("UPDATE expedientes SET actualizado_en = now() WHERE id = %s", (expediente_id,))
+        conn.commit()
+    return {"id": str(fila[0]), "nombre": fila[1], "procedimiento": fila[2]}
+
+
 def cargar_expediente(expediente_id: str) -> tuple[dict[str, list], set[str]]:
     historial = {k: list(v) for k, v in HISTORIAL_BASE.items()}
     procesados: set[str] = set()
@@ -320,16 +353,26 @@ def cargar_expediente(expediente_id: str) -> tuple[dict[str, list], set[str]]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT d.categoria, d.clave_procesamiento, r.datos
+                SELECT d.id, d.categoria, d.clave_procesamiento, d.clave_catalogo,
+                       d.tipo_documental, d.nombre_archivo, r.datos
                 FROM documentos d
                 JOIN resultados_extraccion r ON r.documento_id = d.id
                 WHERE d.expediente_id = %s AND d.estado = 'OK'
+                  AND d.eliminado_en IS NULL
                 ORDER BY d.creado_en, r.creado_en
                 """,
                 (expediente_id,),
             )
-            for categoria, clave, datos in cur.fetchall():
-                historial.setdefault(categoria, []).extend(datos or [])
+            for documento_id, categoria, clave, clave_catalogo, tipo_documental, nombre, datos in cur.fetchall():
+                for analisis in datos or []:
+                    if isinstance(analisis, dict):
+                        analisis = dict(analisis)
+                        analisis["_documento_id"] = str(documento_id)
+                        analisis["_clave_procesamiento"] = clave
+                        analisis["_clave_catalogo"] = clave_catalogo
+                        analisis["_tipo_documental"] = tipo_documental
+                        analisis.setdefault("Archivo Origen", nombre)
+                    historial.setdefault(categoria, []).append(analisis)
                 procesados.add(clave)
     return historial, procesados
 
@@ -372,6 +415,7 @@ def cargar_control_expediente(expediente_id: str) -> tuple[dict[str, str], list[
                            d.clave_catalogo, d.tipo_documental
                     FROM documentos d
                     WHERE d.expediente_id = %s
+                      AND d.eliminado_en IS NULL
                       AND NOT EXISTS (
                           SELECT 1
                           FROM archivos_expediente a
@@ -393,7 +437,7 @@ def cargar_control_expediente(expediente_id: str) -> tuple[dict[str, str], list[
                     SELECT nombre_archivo, huella_sha256, estado,
                            clave_catalogo, tipo_documental
                     FROM documentos
-                    WHERE expediente_id = %s
+                    WHERE expediente_id = %s AND eliminado_en IS NULL
                     ORDER BY creado_en, nombre_archivo
                     """,
                     (expediente_id,),
@@ -707,6 +751,47 @@ def registrar_error(
                 if exc.__class__.__name__ not in {"UndefinedTable", "UndefinedColumn"}:
                     raise
                 cur.execute("ROLLBACK TO SAVEPOINT marcar_error_requisito")
+        conn.commit()
+
+
+def eliminar_analisis(
+    expediente_id: str,
+    documento_id: str,
+    usuario: str,
+    motivo: str = "Eliminado por el usuario",
+) -> None:
+    """Oculta un análisis conservando una baja lógica auditable."""
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE documentos
+                SET eliminado_en = now(), eliminado_por = %s,
+                    motivo_eliminacion = %s, actualizado_en = now()
+                WHERE id = %s AND expediente_id = %s AND eliminado_en IS NULL
+                RETURNING clave_procesamiento, clave_catalogo, archivo_expediente_id
+                """,
+                (usuario, motivo[:1000], documento_id, expediente_id),
+            )
+            fila = cur.fetchone()
+            if not fila:
+                raise RuntimeError("El análisis ya no existe o ya fue eliminado")
+            clave, clave_catalogo, archivo_id = fila
+            cur.execute(
+                """
+                UPDATE expediente_requisitos
+                SET resultado_ia = 'SIN_ANALIZAR', ultimo_documento_id = NULL,
+                    actualizado_en = now()
+                WHERE expediente_id = %s AND clave_catalogo = %s
+                  AND ultimo_documento_id = %s
+                """,
+                (expediente_id, clave_catalogo, documento_id),
+            )
+            if archivo_id:
+                cur.execute(
+                    "UPDATE archivos_expediente SET estado = 'CARGADO', actualizado_en = now() WHERE id = %s",
+                    (archivo_id,),
+                )
         conn.commit()
 
 

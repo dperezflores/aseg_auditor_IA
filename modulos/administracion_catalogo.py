@@ -219,6 +219,192 @@ def cargar_reglas(documento_id: str) -> list[dict[str, Any]]:
             return [dict(zip(claves, fila)) for fila in cur.fetchall()]
 
 
+def listar_formatos(documento_id: str) -> list[dict[str, Any]]:
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, extension, mime_type, modalidad_formato, activo,
+                       estado_revision, observaciones
+                FROM formatos_documento
+                WHERE catalogo_documento_id = %s
+                ORDER BY activo DESC, extension
+                """,
+                (documento_id,),
+            )
+            claves = ("id", "extension", "mime_type", "modalidad_formato", "activo", "estado_revision", "observaciones")
+            return [dict(zip(claves, fila)) for fila in cur.fetchall()]
+
+
+def guardar_formato(
+    importacion_id: str, documento_id: str, extension: str, mime_type: str,
+    modalidad: str, activo: bool, estado_revision: str, observaciones: str,
+    usuario: str, motivo: str,
+) -> None:
+    extension = extension.lower().strip().lstrip(".")
+    if not extension or not extension.replace("_", "").isalnum():
+        raise ValueError("Indique una extensión válida, por ejemplo pdf, xlsx o dwg")
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            _exigir_borrador(cur, importacion_id)
+            cur.execute(
+                """
+                SELECT id FROM formatos_documento
+                WHERE importacion_id = %s AND catalogo_documento_id = %s
+                  AND lower(extension) = %s
+                LIMIT 1
+                """,
+                (importacion_id, documento_id, extension),
+            )
+            existente = cur.fetchone()
+            if existente:
+                cur.execute(
+                    """
+                    UPDATE formatos_documento
+                    SET mime_type = %s, nombre_por_formato = %s,
+                        modalidad_formato = %s, activo = %s,
+                        estado_revision = %s, observaciones = %s
+                    WHERE id = %s
+                    """,
+                    (mime_type or "application/octet-stream", f"Archivo .{extension}",
+                     modalidad, activo, estado_revision, observaciones, existente[0]),
+                )
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO formatos_documento (
+                        importacion_id, formato_id, catalogo_documento_id, extension,
+                        mime_type, nombre_por_formato, modalidad_formato, activo,
+                        estado_revision, observaciones, fuente_origen
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'Administrador')
+                    """,
+                    (importacion_id, f"FMT_{str(documento_id)[:8]}_{extension.upper()}",
+                     documento_id, extension, mime_type or "application/octet-stream",
+                     f"Archivo .{extension}", modalidad, activo, estado_revision, observaciones),
+                )
+            _auditar(cur, importacion_id, usuario, "formatos_documento", documento_id,
+                     "GUARDAR_FORMATO", None, {"extension": extension, "activo": activo}, motivo)
+        conn.commit()
+
+
+def listar_campos(importacion_id: str, tipo_documental: str) -> list[dict[str, Any]]:
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, orden_salida, nombre_tecnico, etiqueta_salida, tipo_dato,
+                       obligatorio_ia, instruccion_extraccion, mostrar_en_detalle,
+                       estado_revision, observaciones
+                FROM campos_extraccion
+                WHERE importacion_id = %s AND tipo_documental = %s
+                ORDER BY orden_salida, nombre_tecnico
+                """,
+                (importacion_id, tipo_documental),
+            )
+            claves = ("id", "orden_salida", "nombre_tecnico", "etiqueta_salida", "tipo_dato",
+                      "obligatorio_ia", "instruccion_extraccion", "mostrar_en_detalle",
+                      "estado_revision", "observaciones")
+            return [dict(zip(claves, fila)) for fila in cur.fetchall()]
+
+
+def guardar_campo(
+    importacion_id: str, tipo_documental: str, campo: dict[str, Any],
+    usuario: str, motivo: str,
+) -> None:
+    nombre = str(campo["nombre_tecnico"]).strip().lower()
+    if not nombre or not nombre.replace("_", "").isalnum() or " " in nombre:
+        raise ValueError("El nombre técnico debe usar minúsculas y guiones bajos, sin espacios")
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            _exigir_borrador(cur, importacion_id)
+            cur.execute(
+                """
+                INSERT INTO campos_extraccion (
+                    importacion_id, campo_id, tipo_documental, orden_salida,
+                    nombre_tecnico, etiqueta_salida, tipo_dato, obligatorio_ia,
+                    instruccion_extraccion, mostrar_en_detalle, estado_revision,
+                    observaciones
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (importacion_id, tipo_documental, nombre_tecnico)
+                DO UPDATE SET orden_salida = EXCLUDED.orden_salida,
+                              etiqueta_salida = EXCLUDED.etiqueta_salida,
+                              tipo_dato = EXCLUDED.tipo_dato,
+                              obligatorio_ia = EXCLUDED.obligatorio_ia,
+                              instruccion_extraccion = EXCLUDED.instruccion_extraccion,
+                              mostrar_en_detalle = EXCLUDED.mostrar_en_detalle,
+                              estado_revision = EXCLUDED.estado_revision,
+                              observaciones = EXCLUDED.observaciones
+                """,
+                (importacion_id, f"{tipo_documental}_{nombre}", tipo_documental,
+                 int(campo["orden_salida"]), nombre, campo["etiqueta_salida"],
+                 campo["tipo_dato"], bool(campo["obligatorio_ia"]),
+                 campo["instruccion_extraccion"], bool(campo["mostrar_en_detalle"]),
+                 campo["estado_revision"], campo.get("observaciones", "")),
+            )
+            _auditar(cur, importacion_id, usuario, "campos_extraccion", nombre,
+                     "GUARDAR_CAMPO", None, campo, motivo)
+        conn.commit()
+
+
+def listar_procedimientos(importacion_id: str, tipo_documental: str) -> list[dict[str, Any]]:
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, procedimiento_id, orden, procedimiento_validacion,
+                       resultado_esperado, evidencia_requerida, riesgo_codigo,
+                       activo, estado_revision, observaciones
+                FROM procedimientos_validacion
+                WHERE importacion_id = %s AND tipo_documental = %s
+                ORDER BY orden, procedimiento_id
+                """,
+                (importacion_id, tipo_documental),
+            )
+            claves = ("id", "procedimiento_id", "orden", "procedimiento_validacion",
+                      "resultado_esperado", "evidencia_requerida", "riesgo_codigo",
+                      "activo", "estado_revision", "observaciones")
+            return [dict(zip(claves, fila)) for fila in cur.fetchall()]
+
+
+def guardar_procedimiento(
+    importacion_id: str, tipo_documental: str, item: dict[str, Any],
+    usuario: str, motivo: str,
+) -> None:
+    procedimiento_id = str(item["procedimiento_id"]).strip().upper()
+    if not procedimiento_id or not procedimiento_id.replace("_", "").isalnum():
+        raise ValueError("Use una clave técnica sin espacios, por ejemplo CNT_FIRMAS")
+    with _conexion() as conn:
+        with conn.cursor() as cur:
+            _exigir_borrador(cur, importacion_id)
+            cur.execute(
+                """
+                INSERT INTO procedimientos_validacion (
+                    importacion_id, procedimiento_id, tipo_documental, orden,
+                    procedimiento_validacion, resultado_esperado,
+                    evidencia_requerida, riesgo_codigo, activo,
+                    estado_revision, observaciones
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (importacion_id, procedimiento_id)
+                DO UPDATE SET orden = EXCLUDED.orden,
+                              procedimiento_validacion = EXCLUDED.procedimiento_validacion,
+                              resultado_esperado = EXCLUDED.resultado_esperado,
+                              evidencia_requerida = EXCLUDED.evidencia_requerida,
+                              riesgo_codigo = EXCLUDED.riesgo_codigo,
+                              activo = EXCLUDED.activo,
+                              estado_revision = EXCLUDED.estado_revision,
+                              observaciones = EXCLUDED.observaciones
+                """,
+                (importacion_id, procedimiento_id, tipo_documental, int(item["orden"]),
+                 item["procedimiento_validacion"], item.get("resultado_esperado"),
+                 item.get("evidencia_requerida"), item.get("riesgo_codigo") or "Sin riesgo",
+                 bool(item.get("activo", True)), item.get("estado_revision", "Pendiente"),
+                 item.get("observaciones", "")),
+            )
+            _auditar(cur, importacion_id, usuario, "procedimientos_validacion", procedimiento_id,
+                     "GUARDAR_PROCEDIMIENTO", None, item, motivo)
+        conn.commit()
+
+
 def actualizar_documento(
     importacion_id: str,
     documento_id: str,
@@ -302,7 +488,7 @@ def validar_borrador(importacion_id: str) -> list[str]:
                 errores.append("La versión no contiene documentos activos.")
             cur.execute(
                 """
-                SELECT count(*) FROM catalogo_documentos d
+                SELECT d.clave_catalogo, d.nombre_documento FROM catalogo_documentos d
                 WHERE d.importacion_id = %s AND d.activo
                   AND d.obligatoriedad = 'Condicional'
                   AND NOT EXISTS (
@@ -313,9 +499,29 @@ def validar_borrador(importacion_id: str) -> list[str]:
                 """,
                 (importacion_id,),
             )
-            pendientes = cur.fetchone()[0]
+            pendientes = cur.fetchall()
             if pendientes:
-                errores.append(f"Hay {pendientes} documento(s) condicional(es) sin regla aprobada.")
+                nombres = ", ".join(f"{clave} ({nombre})" for clave, nombre in pendientes[:8])
+                extra = f" y {len(pendientes) - 8} más" if len(pendientes) > 8 else ""
+                errores.append(
+                    "Documentos condicionales sin una regla aprobada: " + nombres + extra + "."
+                )
+            cur.execute(
+                """
+                SELECT d.clave_catalogo
+                FROM catalogo_documentos d
+                WHERE d.importacion_id = %s AND d.activo
+                  AND d.estado_revision <> 'Aprobado'
+                ORDER BY d.procedimiento, d.orden_en_procedimiento
+                """,
+                (importacion_id,),
+            )
+            no_aprobados = [fila[0] for fila in cur.fetchall()]
+            if no_aprobados:
+                errores.append(
+                    "Falta aprobar la revisión de: " + ", ".join(no_aprobados[:12])
+                    + (f" y {len(no_aprobados) - 12} más." if len(no_aprobados) > 12 else ".")
+                )
     return errores
 
 
