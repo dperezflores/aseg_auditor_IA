@@ -90,6 +90,19 @@ def _registros_archivos_actuales(archivos_subidos) -> list[dict]:
     return registros
 
 
+def _objetos_archivos_actuales(archivos_subidos) -> list[dict]:
+    """Vincula metadatos conciliados con los PDF disponibles en los uploaders."""
+    return [
+        {
+            "nombre": archivo.name,
+            "huella": _huella_sha256(archivo),
+            "archivo": archivo,
+        }
+        for grupo in archivos_subidos.values()
+        for archivo in grupo
+    ]
+
+
 def _contexto_automatico(archivos) -> dict:
     tipos_presentes = {
         archivo.clave_catalogo
@@ -591,6 +604,7 @@ def main() -> None:
             al_ver_analisis=ver_analisis_desde_validacion,
             documentos_catalogo=documentos_catalogo,
             archivos_existentes=_registros_archivos_actuales(archivos_subidos),
+            archivos_disponibles=_objetos_archivos_actuales(archivos_subidos),
         )
         return
 
@@ -678,6 +692,7 @@ def main() -> None:
         al_ver_analisis=ver_analisis_desde_validacion,
         documentos_catalogo=documentos_catalogo,
         archivos_existentes=_registros_archivos_actuales(archivos_subidos),
+        archivos_disponibles=_objetos_archivos_actuales(archivos_subidos),
     )
     archivos_etapa = archivos_subidos.get(
         estructura_expediente[pagina_actual]["key_raiz"], []
