@@ -518,11 +518,10 @@ def renderizar_conciliacion_expediente(
         use_container_width=True,
     )
 
-    if modo_acciones == "analisis" and al_analizar_lote:
-        st.markdown("#### Centro de análisis de la etapa")
-        por_clave = {item.documento.clave_catalogo: item for item in resultados}
-        analizables = {}
-        sin_pdf_disponible = []
+    por_clave = {item.documento.clave_catalogo: item for item in resultados}
+    analizables = {}
+    sin_pdf_disponible = []
+    if modo_acciones == "analisis":
         for clave_resultado, resultado in por_clave.items():
             archivo = resolver_archivo_disponible(
                 resultado.archivos,
@@ -533,6 +532,28 @@ def renderizar_conciliacion_expediente(
             elif resultado.archivos and resultado.estado != "DUPLICADO":
                 sin_pdf_disponible.append(resultado.documento.nombre)
 
+    if sin_pdf_disponible:
+        st.warning(
+            "Estos documentos están registrados en el expediente, pero el PDF no "
+            "está disponible en la sesión actual. Vuelva a agregarlos en el panel "
+            "lateral para analizarlos: " + ", ".join(sin_pdf_disponible)
+        )
+
+    no_reconocidos = conciliacion.no_reconocidos
+    if etapa is not None:
+        no_reconocidos = tuple(
+            archivo
+            for archivo in no_reconocidos
+            if archivo.nombre.upper().startswith(f"{etapa}_")
+        )
+    if no_reconocidos:
+        st.warning(
+            "Archivos todavía no conciliados con una definición aprobada: "
+            + ", ".join(archivo.nombre for archivo in no_reconocidos)
+        )
+
+    if modo_acciones == "analisis" and al_analizar_lote:
+        st.markdown("#### Centro de análisis de la etapa")
         if analizables:
             pendientes_ia = [
                 clave_resultado
@@ -546,22 +567,6 @@ def renderizar_conciliacion_expediente(
                 for clave_resultado in guardados
                 if clave_resultado in analizables
             ]
-            controles = st.columns([1, 1, 3])
-            if controles[0].button(
-                "Seleccionar pendientes",
-                key=f"seleccionar_pendientes_{etapa or 'TODAS'}",
-                disabled=not pendientes_ia,
-            ):
-                st.session_state[clave_seleccion] = pendientes_ia
-                st.rerun()
-            if controles[1].button(
-                "Limpiar selección",
-                key=f"limpiar_lote_{etapa or 'TODAS'}",
-                disabled=not st.session_state[clave_seleccion],
-            ):
-                st.session_state[clave_seleccion] = []
-                st.rerun()
-
             seleccionados = st.multiselect(
                 "Documentos que se analizarán",
                 options=list(analizables),
@@ -570,6 +575,23 @@ def renderizar_conciliacion_expediente(
                     f"{analizables[valor][0].documento.nombre} · "
                     f"{analizables[valor][1].name} · "
                     f"{etiquetas_ia.get(analizables[valor][0].resultado_ia, analizables[valor][0].resultado_ia)}"
+                ),
+            )
+            controles = st.columns([1, 1, 3])
+            controles[0].button(
+                "Seleccionar pendientes",
+                key=f"seleccionar_pendientes_{etapa or 'TODAS'}",
+                disabled=not pendientes_ia,
+                on_click=lambda: st.session_state.update(
+                    {clave_seleccion: pendientes_ia}
+                ),
+            )
+            controles[1].button(
+                "Limpiar selección",
+                key=f"limpiar_lote_{etapa or 'TODAS'}",
+                disabled=not seleccionados,
+                on_click=lambda: st.session_state.update(
+                    {clave_seleccion: []}
                 ),
             )
             requiere_reanalisis = any(
@@ -604,18 +626,9 @@ def renderizar_conciliacion_expediente(
             st.info(
                 "Cargue documentos en la carpeta de esta etapa para habilitar el análisis."
             )
-        if sin_pdf_disponible:
-            st.warning(
-                "Estos documentos están registrados en el expediente, pero el PDF no "
-                "está disponible en la sesión actual. Vuelva a agregarlos en el panel "
-                "lateral para analizarlos: " + ", ".join(sin_pdf_disponible)
-            )
 
-    if modo_acciones in {"consulta", "analisis"} and al_ver_analisis:
+    if modo_acciones == "consulta" and al_ver_analisis:
         st.markdown("#### Consulta del documento")
-        por_clave = {
-            item.documento.clave_catalogo: item for item in resultados
-        }
         clave = st.selectbox(
             "Seleccione un documento",
             list(por_clave),
@@ -640,16 +653,3 @@ def renderizar_conciliacion_expediente(
         with columnas_accion[1].popover("Ver criterios"):
             st.write(documento.criterios_identificacion_ia or "Sin criterios registrados.")
             st.caption(documento.fundamento_normativo or "Sin fundamento registrado.")
-
-    no_reconocidos = conciliacion.no_reconocidos
-    if etapa is not None:
-        no_reconocidos = tuple(
-            archivo
-            for archivo in no_reconocidos
-            if archivo.nombre.upper().startswith(f"{etapa}_")
-        )
-    if no_reconocidos:
-        st.warning(
-            "Archivos todavía no conciliados con una definición aprobada: "
-            + ", ".join(archivo.nombre for archivo in no_reconocidos)
-        )
