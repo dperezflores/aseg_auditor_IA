@@ -82,14 +82,6 @@ def _archivos_para_conciliar(archivos_subidos) -> list[aplicabilidad.ArchivoExpe
     return archivos
 
 
-def _registros_archivos_actuales(archivos_subidos) -> list[dict]:
-    registros = list(st.session_state.get("archivos_guardados", []))
-    for grupo in archivos_subidos.values():
-        for archivo in grupo:
-            registros.append({"nombre": archivo.name, "huella": _huella_sha256(archivo)})
-    return registros
-
-
 def _objetos_archivos_actuales(archivos_subidos) -> list[dict]:
     """Vincula metadatos conciliados con los PDF disponibles en los uploaders."""
     return [
@@ -260,6 +252,7 @@ def procesar_lote_documentos(
     categoria,
     funcion_extraccion,
     documento_catalogo: catalogo.DocumentoCatalogo | None = None,
+    forzar: bool = False,
 ) -> dict:
     st.session_state.historial.setdefault(categoria, [])
     pendientes = []
@@ -268,7 +261,7 @@ def procesar_lote_documentos(
     for archivo in archivos:
         huella = _huella_sha256(archivo)
         clave = _clave_procesamiento(categoria, huella, documento_catalogo)
-        if clave in st.session_state.archivos_procesados:
+        if clave in st.session_state.archivos_procesados and not forzar:
             omitidos += 1
         else:
             pendientes.append((archivo, huella, clave))
@@ -375,10 +368,6 @@ def main() -> None:
             "nombre": "4_EJE (Ejecución)",
         },
         "ETR": {"key_raiz": "up_etr", "nombre": "5_ETR (Entrega Recepción)"},
-    }
-    mapa_funciones = {
-        "CONTRATO": extraccion.procesar_contratos,
-        "CNT_CNT": extraccion.procesar_contratos,
     }
     archivos_subidos = {}
     documentos_catalogo = st.session_state.get("documentos_catalogo", [])
@@ -495,33 +484,59 @@ def main() -> None:
         _contexto_automatico(archivos_control),
     )
 
-    def analizar_desde_validacion(archivo, documento) -> None:
-        huella = _huella_sha256(archivo)
-        ya_registrado = any(
-            item.get("huella") == huella or item.get("nombre") == archivo.name
-            for item in st.session_state.get("archivos_guardados", [])
-        )
-        if st.session_state.usar_neon and not ya_registrado:
-            persistencia.registrar_archivo_cargado(
-                st.session_state.expediente_id,
-                documento.etapa,
-                archivo.name,
-                huella,
-                getattr(archivo, "type", None),
-                getattr(archivo, "size", None),
-                documento.clave_catalogo,
-                usuario_actual,
+    def analizar_lote_desde_validacion(selecciones) -> None:
+        acumulado = {
+            "seleccionados": 0,
+            "pendientes": 0,
+            "exitos": 0,
+            "errores": 0,
+            "omitidos": 0,
+        }
+        total = len(selecciones)
+        progreso = st.progress(0, text=f"Preparando {total} documento(s)...")
+        etapa_destino = None
+        for indice, (archivo, documento, forzar) in enumerate(selecciones, start=1):
+            etapa_destino = documento.etapa
+            progreso.progress(
+                (indice - 1) / total,
+                text=f"Analizando {indice} de {total}: {documento.nombre}",
             )
-        resumen = procesar_lote_documentos(
-            [archivo],
-            documento.tipo_documental,
-            lambda item: extraccion.procesar_con_catalogo(item, documento),
-            documento,
-        )
-        _mostrar_resumen(resumen)
-        if resumen["exitos"]:
+            huella = _huella_sha256(archivo)
+            ya_registrado = any(
+                item.get("huella") == huella or item.get("nombre") == archivo.name
+                for item in st.session_state.get("archivos_guardados", [])
+            )
+            if st.session_state.usar_neon and not ya_registrado:
+                persistencia.registrar_archivo_cargado(
+                    st.session_state.expediente_id,
+                    documento.etapa,
+                    archivo.name,
+                    huella,
+                    getattr(archivo, "type", None),
+                    getattr(archivo, "size", None),
+                    documento.clave_catalogo,
+                    usuario_actual,
+                )
+            parcial = procesar_lote_documentos(
+                [archivo],
+                documento.tipo_documental,
+                lambda item, definicion=documento: (
+                    extraccion.procesar_con_catalogo(item, definicion)
+                ),
+                documento,
+                forzar=forzar,
+            )
+            for clave in acumulado:
+                acumulado[clave] += parcial[clave]
+            progreso.progress(
+                indice / total,
+                text=f"Procesados {indice} de {total} documento(s)",
+            )
+        progreso.empty()
+        _mostrar_resumen(acumulado)
+        if acumulado["exitos"]:
             _cargar_expediente_activo(forzar=True)
-            st.session_state.destino_pagina = documento.etapa
+            st.session_state.destino_pagina = etapa_destino
             st.rerun()
 
     def ver_analisis_desde_validacion(documento) -> None:
@@ -600,11 +615,8 @@ def main() -> None:
         )
         utilidades_ui.renderizar_conciliacion_expediente(
             conciliacion,
-            al_analizar=analizar_desde_validacion,
             al_ver_analisis=ver_analisis_desde_validacion,
-            documentos_catalogo=documentos_catalogo,
-            archivos_existentes=_registros_archivos_actuales(archivos_subidos),
-            archivos_disponibles=_objetos_archivos_actuales(archivos_subidos),
+            modo_acciones="consulta",
         )
         return
 
@@ -688,107 +700,11 @@ def main() -> None:
     utilidades_ui.renderizar_conciliacion_expediente(
         conciliacion,
         pagina_actual,
-        al_analizar=analizar_desde_validacion,
+        al_analizar_lote=analizar_lote_desde_validacion,
         al_ver_analisis=ver_analisis_desde_validacion,
-        documentos_catalogo=documentos_catalogo,
-        archivos_existentes=_registros_archivos_actuales(archivos_subidos),
         archivos_disponibles=_objetos_archivos_actuales(archivos_subidos),
+        modo_acciones="analisis",
     )
-    archivos_etapa = archivos_subidos.get(
-        estructura_expediente[pagina_actual]["key_raiz"], []
-    )
-    if archivos_etapa:
-        por_nombre = {archivo.name: archivo for archivo in archivos_etapa}
-        seleccionados = st.multiselect(
-            "Seleccione los archivos a clasificar y analizar:",
-            options=list(por_nombre),
-        )
-        if st.button("🚀 Iniciar análisis inteligente", type="primary") and seleccionados:
-            resumen = {"seleccionados": 0, "pendientes": 0, "exitos": 0, "errores": 0, "omitidos": 0}
-            no_encontrados = 0
-            sin_funcion = 0
-            for nombre in seleccionados:
-                documento_catalogo = catalogo.clasificar_archivo(
-                    nombre,
-                    (
-                        documento
-                        for documento in documentos_catalogo
-                        if documento.etapa == pagina_actual
-                    ),
-                )
-                concepto = (
-                    documento_catalogo.tipo_documental
-                    if documento_catalogo
-                    else utilidades_ui.consultar_diccionario(
-                        nombre, st.session_state.procedimiento
-                    )
-                )
-                if not concepto:
-                    no_encontrados += 1
-                    continue
-                if documento_catalogo:
-                    coincidencia = (
-                        documento_catalogo.tipo_documental,
-                        lambda archivo, definicion=documento_catalogo: (
-                            extraccion.procesar_con_catalogo(archivo, definicion)
-                        ),
-                    )
-                else:
-                    coincidencia = (
-                        (concepto, mapa_funciones[concepto])
-                        if concepto in mapa_funciones
-                        else next(
-                            (
-                                (clave, funcion)
-                                for clave, funcion in mapa_funciones.items()
-                                if clave in concepto
-                            ),
-                            None,
-                        )
-                    )
-                if not coincidencia:
-                    sin_funcion += 1
-                    st.warning(
-                        f"El archivo fue reconocido por la clasificación anterior "
-                        f"como {concepto}, pero no existe una definición aprobada "
-                        f"del catálogo para {st.session_state.procedimiento[:3]} "
-                        f"en esta etapa."
-                    )
-                    continue
-                categoria, funcion = coincidencia
-                archivo_actual = por_nombre[nombre]
-                huella_actual = _huella_sha256(archivo_actual)
-                ya_registrado = any(
-                    item.get("huella") == huella_actual or item.get("nombre") == archivo_actual.name
-                    for item in st.session_state.get("archivos_guardados", [])
-                )
-                if st.session_state.usar_neon and not ya_registrado:
-                    persistencia.registrar_archivo_cargado(
-                        st.session_state.expediente_id, pagina_actual, archivo_actual.name,
-                        huella_actual, getattr(archivo_actual, "type", None),
-                        getattr(archivo_actual, "size", None),
-                        documento_catalogo.clave_catalogo if documento_catalogo else None,
-                        usuario_actual,
-                    )
-                parcial = procesar_lote_documentos(
-                    [archivo_actual],
-                    categoria,
-                    funcion,
-                    documento_catalogo,
-                )
-                for clave in resumen:
-                    resumen[clave] += parcial[clave]
-
-            _mostrar_resumen(resumen)
-            if no_encontrados:
-                st.warning(f"Archivos sin coincidencia en el diccionario: {no_encontrados}.")
-            if sin_funcion:
-                st.warning(
-                    "Archivos reconocidos únicamente por la clasificación anterior "
-                    f"y no analizados: {sin_funcion}."
-                )
-    else:
-        st.warning(f"No hay documentos cargados en la carpeta de {pagina_actual}.")
 
     conceptos = []
     archivos_catalogados = {
