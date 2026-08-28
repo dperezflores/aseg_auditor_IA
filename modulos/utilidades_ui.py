@@ -6,6 +6,7 @@ import os
 import hashlib
 import html
 
+from modulos.aplicabilidad import resolver_archivo_disponible
 from modulos.esquemas import DatosContrato
 
 
@@ -426,6 +427,7 @@ def renderizar_conciliacion_expediente(
     al_ver_analisis=None,
     documentos_catalogo=None,
     archivos_existentes=None,
+    archivos_disponibles=None,
 ):
     """Muestra el control documental sin convertir pendientes en faltantes."""
     resultados = [
@@ -537,7 +539,13 @@ def renderizar_conciliacion_expediente(
             key=f"accion_upload_{documento.id}",
         )
         columnas_accion = st.columns(4)
-        archivo_analisis = archivo_nuevo
+        archivo_existente = resolver_archivo_disponible(
+            seleccionado.archivos,
+            archivos_disponibles or [],
+        )
+        archivo_analisis = (
+            archivo_nuevo if archivo_nuevo is not None else archivo_existente
+        )
         confirmar_inconsistencia = True
         if archivo_nuevo is not None:
             huella = hashlib.sha256(archivo_nuevo.getvalue()).hexdigest()
@@ -561,6 +569,11 @@ def renderizar_conciliacion_expediente(
                         "Estoy seguro de que deseo analizarlo de todas formas",
                         key=f"confirmar_codigo_{documento.id}_{huella[:10]}",
                     )
+        elif archivo_existente is not None:
+            st.info(
+                f"Se utilizará el archivo ya cargado en Documentos generales: "
+                f"{archivo_existente.name}."
+            )
         if al_analizar:
             etiqueta = (
                 "Volver a analizar con IA"
@@ -590,8 +603,18 @@ def renderizar_conciliacion_expediente(
             st.info(
                 "Conserve el archivo correcto y retire los duplicados desde el panel lateral."
             )
-        if archivo_nuevo is None:
-            st.caption("Para analizar desde esta tabla, primero seleccione el PDF en 'Subir o sustituir documento'.")
+        if archivo_analisis is None:
+            if seleccionado.archivos:
+                st.caption(
+                    "El expediente conserva el registro del documento, pero el PDF ya no "
+                    "está disponible en esta sesión. Selecciónelo nuevamente en "
+                    "'Subir o sustituir documento' para analizarlo."
+                )
+            else:
+                st.caption(
+                    "Para analizar desde esta tabla, cargue el PDF en Documentos "
+                    "generales o selecciónelo en 'Subir o sustituir documento'."
+                )
 
     no_reconocidos = conciliacion.no_reconocidos
     if etapa is not None:
