@@ -6,6 +6,7 @@ import os
 import hashlib
 import html
 
+from modulos.aplicabilidad import resolver_archivo_disponible
 from modulos.esquemas import DatosContrato
 
 
@@ -422,10 +423,10 @@ def renderizar_reporte_catalogo(analisis, al_eliminar=None):
 def renderizar_conciliacion_expediente(
     conciliacion,
     etapa=None,
-    al_analizar=None,
+    al_analizar_lote=None,
     al_ver_analisis=None,
-    documentos_catalogo=None,
-    archivos_existentes=None,
+    archivos_disponibles=None,
+    modo_acciones="ninguno",
 ):
     """Muestra el control documental sin convertir pendientes en faltantes."""
     resultados = [
@@ -500,9 +501,12 @@ def renderizar_conciliacion_expediente(
                     resultado.resultado_ia,
                 ),
                 "Acciones": (
-                    "Subir · Analizar · Ver análisis"
+                    "Ver análisis"
+                    if resultado.resultado_ia
+                    in {"CUMPLE", "NO_CUMPLE", "REVISION_REQUERIDA"}
+                    else "Pendiente de análisis"
                     if resultado.archivos
-                    else "Subir documento"
+                    else "Sin archivo"
                 ),
             }
             for resultado in resultados
@@ -514,8 +518,101 @@ def renderizar_conciliacion_expediente(
         use_container_width=True,
     )
 
-    if al_analizar or al_ver_analisis:
-        st.markdown("#### Acciones del documento")
+    if modo_acciones == "analisis" and al_analizar_lote:
+        st.markdown("#### Centro de análisis de la etapa")
+        por_clave = {item.documento.clave_catalogo: item for item in resultados}
+        analizables = {}
+        sin_pdf_disponible = []
+        for clave_resultado, resultado in por_clave.items():
+            archivo = resolver_archivo_disponible(
+                resultado.archivos,
+                archivos_disponibles or [],
+            )
+            if archivo is not None and resultado.estado != "DUPLICADO":
+                analizables[clave_resultado] = (resultado, archivo)
+            elif resultado.archivos and resultado.estado != "DUPLICADO":
+                sin_pdf_disponible.append(resultado.documento.nombre)
+
+        if analizables:
+            pendientes_ia = [
+                clave_resultado
+                for clave_resultado, (resultado, _) in analizables.items()
+                if resultado.resultado_ia in {"SIN_ANALIZAR", "ERROR"}
+            ]
+            clave_seleccion = f"lote_documentos_{etapa or 'TODAS'}"
+            guardados = st.session_state.get(clave_seleccion, [])
+            st.session_state[clave_seleccion] = [
+                clave_resultado
+                for clave_resultado in guardados
+                if clave_resultado in analizables
+            ]
+            controles = st.columns([1, 1, 3])
+            if controles[0].button(
+                "Seleccionar pendientes",
+                key=f"seleccionar_pendientes_{etapa or 'TODAS'}",
+                disabled=not pendientes_ia,
+            ):
+                st.session_state[clave_seleccion] = pendientes_ia
+                st.rerun()
+            if controles[1].button(
+                "Limpiar selección",
+                key=f"limpiar_lote_{etapa or 'TODAS'}",
+                disabled=not st.session_state[clave_seleccion],
+            ):
+                st.session_state[clave_seleccion] = []
+                st.rerun()
+
+            seleccionados = st.multiselect(
+                "Documentos que se analizarán",
+                options=list(analizables),
+                key=clave_seleccion,
+                format_func=lambda valor: (
+                    f"{analizables[valor][0].documento.nombre} · "
+                    f"{analizables[valor][1].name} · "
+                    f"{etiquetas_ia.get(analizables[valor][0].resultado_ia, analizables[valor][0].resultado_ia)}"
+                ),
+            )
+            requiere_reanalisis = any(
+                analizables[clave_resultado][0].resultado_ia
+                not in {"SIN_ANALIZAR", "ERROR"}
+                for clave_resultado in seleccionados
+            )
+            confirmar_reanalisis = True
+            if requiere_reanalisis:
+                confirmar_reanalisis = st.checkbox(
+                    "Confirmo que deseo volver a analizar los documentos que ya tienen resultado",
+                    key=f"confirmar_reanalisis_{etapa or 'TODAS'}",
+                )
+            if st.button(
+                "🚀 Analizar seleccionados con IA",
+                type="primary",
+                key=f"analizar_lote_{etapa or 'TODAS'}",
+                disabled=not seleccionados or not confirmar_reanalisis,
+            ):
+                al_analizar_lote(
+                    [
+                        (
+                            analizables[clave_resultado][1],
+                            analizables[clave_resultado][0].documento,
+                            analizables[clave_resultado][0].resultado_ia
+                            not in {"SIN_ANALIZAR", "ERROR"},
+                        )
+                        for clave_resultado in seleccionados
+                    ]
+                )
+        else:
+            st.info(
+                "Cargue documentos en la carpeta de esta etapa para habilitar el análisis."
+            )
+        if sin_pdf_disponible:
+            st.warning(
+                "Estos documentos están registrados en el expediente, pero el PDF no "
+                "está disponible en la sesión actual. Vuelva a agregarlos en el panel "
+                "lateral para analizarlos: " + ", ".join(sin_pdf_disponible)
+            )
+
+    if modo_acciones in {"consulta", "analisis"} and al_ver_analisis:
+        st.markdown("#### Consulta del documento")
         por_clave = {
             item.documento.clave_catalogo: item for item in resultados
         }
@@ -530,68 +627,19 @@ def renderizar_conciliacion_expediente(
         )
         seleccionado = por_clave[clave]
         documento = seleccionado.documento
-        archivo_nuevo = st.file_uploader(
-            "Subir o sustituir documento",
-            type=list(documento.extensiones),
-            accept_multiple_files=False,
-            key=f"accion_upload_{documento.id}",
-        )
-        columnas_accion = st.columns(4)
-        archivo_analisis = archivo_nuevo
-        confirmar_inconsistencia = True
-        if archivo_nuevo is not None:
-            huella = hashlib.sha256(archivo_nuevo.getvalue()).hexdigest()
-            duplicado = any(
-                item.get("huella") == huella or item.get("nombre") == archivo_nuevo.name
-                for item in (archivos_existentes or [])
-            )
-            if duplicado:
-                st.info("Este documento ya está cargado en el expediente. Puede analizarlo sin volver a registrarlo.")
-            if documentos_catalogo:
-                from modulos import catalogo as catalogo_maestro
-
-                detectado = catalogo_maestro.clasificar_archivo(archivo_nuevo.name, documentos_catalogo)
-                if not detectado or detectado.clave_catalogo != documento.clave_catalogo:
-                    nombre_detectado = detectado.nombre if detectado else "ningún código conocido"
-                    st.warning(
-                        f"El nombre del archivo no coincide con {documento.clave_catalogo} · {documento.nombre}. "
-                        f"El sistema reconoce: {nombre_detectado}."
-                    )
-                    confirmar_inconsistencia = st.checkbox(
-                        "Estoy seguro de que deseo analizarlo de todas formas",
-                        key=f"confirmar_codigo_{documento.id}_{huella[:10]}",
-                    )
-        if al_analizar:
-            etiqueta = (
-                "Volver a analizar con IA"
-                if seleccionado.resultado_ia not in {"SIN_ANALIZAR", "ERROR"}
-                else "Analizar con IA"
-            )
-            if columnas_accion[0].button(
-                etiqueta,
-                key=f"analizar_{documento.id}",
-                disabled=archivo_analisis is None or not confirmar_inconsistencia,
-            ):
-                al_analizar(archivo_analisis, documento)
-        if al_ver_analisis and columnas_accion[1].button(
+        columnas_accion = st.columns(2)
+        tiene_analisis = seleccionado.resultado_ia in {
+            "CUMPLE", "NO_CUMPLE", "REVISION_REQUERIDA"
+        }
+        if columnas_accion[0].button(
             "Ver análisis con IA",
             key=f"ver_analisis_{documento.id}",
-            disabled=seleccionado.resultado_ia == "SIN_ANALIZAR",
+            disabled=not tiene_analisis,
         ):
             al_ver_analisis(documento)
-        with columnas_accion[2].popover("Ver criterios"):
+        with columnas_accion[1].popover("Ver criterios"):
             st.write(documento.criterios_identificacion_ia or "Sin criterios registrados.")
             st.caption(documento.fundamento_normativo or "Sin fundamento registrado.")
-        if columnas_accion[3].button(
-            "Resolver duplicados",
-            key=f"duplicados_{documento.id}",
-            disabled=seleccionado.estado != "DUPLICADO",
-        ):
-            st.info(
-                "Conserve el archivo correcto y retire los duplicados desde el panel lateral."
-            )
-        if archivo_nuevo is None:
-            st.caption("Para analizar desde esta tabla, primero seleccione el PDF en 'Subir o sustituir documento'.")
 
     no_reconocidos = conciliacion.no_reconocidos
     if etapa is not None:

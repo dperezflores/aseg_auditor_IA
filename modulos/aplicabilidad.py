@@ -39,6 +39,28 @@ class ConciliacionExpediente:
         return sum(resultado.estado == estado for resultado in self.resultados)
 
 
+def resolver_archivo_disponible(archivos_conciliados, archivos_disponibles):
+    """Recupera el objeto cargado que corresponde al registro conciliado."""
+    huellas = {
+        archivo.huella
+        for archivo in archivos_conciliados
+        if getattr(archivo, "huella", "")
+    }
+    nombres = {
+        archivo.nombre.casefold()
+        for archivo in archivos_conciliados
+        if getattr(archivo, "nombre", "")
+    }
+
+    for registro in archivos_disponibles:
+        if registro.get("huella") in huellas:
+            return registro.get("archivo")
+    for registro in archivos_disponibles:
+        if str(registro.get("nombre", "")).casefold() in nombres:
+            return registro.get("archivo")
+    return None
+
+
 def _normalizar(valor):
     if isinstance(valor, str):
         return valor.strip().casefold()
